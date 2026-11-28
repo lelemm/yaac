@@ -1,6 +1,9 @@
 # 15 — Moving the hub to another machine, and several hubs on desktop
 
-**Proposed** (P408–P414).
+**Proposed** (P408–P415).
+
+> **The owner's rule.** Hub transfer → the hub must be on one of the targets (Windows / WSL /
+> SSH). Android usage → Tailscale with the hub.
 
 ## What the user sees
 
@@ -32,14 +35,19 @@ the renderers only draw ([07](07-ui.md#several-hubs-on-desktop)):
   enabled once an eligible one is picked and no transfer runs; it asks for confirmation and sends
   one `hub/transfer/start` with a new opId. A refusal or an unknown outcome is shown and never
   re-sent (invariant 10). Every client shows the progress, whoever started it.
-- **`hub/moved`**: the saved entry with that `hubId` (else This PC) takes the new address, any
-  other entry for the same hub or address is dropped, and the window attaches there. The first
+- **`hub/moved`**: the saved entry with that `hubId` (else This PC) takes the new way in, any
+  other entry for the same hub or way in is dropped, and the window attaches there. The first
   attempts fail until the new hub listens, and the normal reattach backoff (1 s, doubling, at most
-  30 s) carries on. When the moved hub was This PC, This PC's entry *becomes* the remote one.
-  The phone's controller only exposes it as `shell.hub.movedTo`, and the Android app restarts that
-  hub's controller on the new address.
+  30 s) carries on. The window follows `via`, never Tailscale ([P415](#the-pcs-window-p415)). With
+  `via: local` (back on this PC's Windows) the entry is This PC again, and the window waits for
+  the tombstone to go before it attaches over the local socket. An older hub sends no `via`:
+  the window then uses `address`, and the moved This PC entry *becomes* the remote one.
+  The phone's controller only exposes it as `shell.hub.movedTo`, and only with an address (it is
+  null when Tailscale does not run where the hub went). The Android app restarts that hub's
+  controller on the new address.
 - **At start**, a tombstone in the local hub's data dir moves This PC's entry the same way before
-  anything attaches, so the window never starts a hub that has moved.
+  anything attaches, so the window never starts a hub that has moved. A tombstone from build
+  1059 (`wslDistro`, no `via`) is read as `via: wsl` for that distro.
 - **Start the hub here again** is offered (Settings → Hubs, Settings → Advanced → Hub, and in place
   of the empty workspace) when the selected hub is the one that moved from this PC and has not
   answered for 20 seconds. After a confirmation it removes the tombstone
@@ -48,21 +56,30 @@ the renderers only draw ([07](07-ui.md#several-hubs-on-desktop)):
 
 ## Which targets can take the hub (P408)
 
-`hub/transfer/candidates` answers every target with `eligible` or a `reason` (a sentence):
-- **SSH target on Linux** (x86_64 first; aarch64 when the release ships it): eligible when
-  `yaacd` there reports Tailscale up on the **same Tailscale login** as this hub, port 47380 free on
-  its Tailscale addresses, and no hub already running there.
-- **WSL target** (a distro of this PC), from a Windows hub: eligible on the same terms as an SSH
-  target. The distro must run **Tailscale itself**: its own `tailscaled`, its own machine and
-  100.x address on the tailnet, on the same login. Windows' Tailscale seen from inside WSL is not
-  enough: its address through mirrored networking, or Windows' `tailscale.exe` through interop.
-  A probe whose Tailscale addresses include one of this PC's is refused for that reason. Port
-  47380 must be free on the distro's own address, and no hub may run there. Otherwise: "Tailscale
-  is not running inside this WSL distro. Install it there (it needs its own machine on your
-  tailnet)." The hub then lives in WSL, kept running from Windows ([below](#into-this-pcs-wsl-p414)).
-- The local Windows target: not eligible (it is this machine).
-- A disconnected target: not eligible ("Connect it first").
-- A development build hub: not eligible (there is no release binary to install).
+`hub/transfer/candidates` answers every target with `eligible` or a `reason` (a sentence), and
+for an eligible one a `warning` about phones. **Tailscale never decides.** It only decides
+whether phones can reach the hub there:
+- **A Linux target** (an SSH server, or a WSL distro of this PC from a Windows hub): eligible
+  when it is connected, its `yaacd` has `hubHost`, there is a published hub for its arch
+  (`x86_64` for now), this hub is a release build, and no hub already runs there.
+- **The PC's Windows** (`windowsInterop`, the target a hub in WSL has for it, or any Windows
+  target): eligible when `yaacd` there finds this exact build of YAAC installed (`hubBuild`,
+  from `yaac.exe hub-info`). Nothing is downloaded. Otherwise "Install YAAC on X first." or
+  "YAAC on X is build B and this hub is A: install the same build there first."
+- **Port 47380** is checked only when X has a Tailscale address of its own: it must be free there.
+- **Warnings** (shown in the confirmation, never a refusal):
+  - No Tailscale on X, or X only sees this computer's own Tailscale (WSL with mirrored
+    networking): "The phone can't reach the hub there until Tailscale runs on X." Then
+    `hub/moved` has an empty address. The moved hub listens as soon as Tailscale comes up there
+    (it asks again every minute).
+  - Another Tailscale login on X than this hub's (or this computer has no Tailscale): "The hub
+    will accept only devices signed in to Tailscale as L; your phone must use that account."
+    The moved hub admits devices of its own login, as always.
+- Not eligible: the hub's own computer ("This is the hub's own computer."), a disconnected
+  target ("Connect it first."), a `yaacd` without `hubHost` ("Update YAAC on that target
+  first."), another OS ("The hub runs on Linux or Windows; X is …"). A development build cannot
+  move to Linux (there is no release binary). A Linux hub, which has no release lookup, cannot
+  move to Linux either ("This build of YAAC cannot move its hub.").
 
 ## How it works (P409)
 
@@ -111,18 +128,21 @@ request carries the transfer's `opId`.
 
 ## The old hub's side, as built (`crates/yaac-hub/src/core/transfer.rs`)
 
-- **Eligibility** (`hub/transfer/candidates`): the transport first (SSH; WSL only when the
-  hub's `TransferHost` names this PC's `yaac.exe` for WSL, so only YAAC for Windows: "Only YAAC
-  for Windows can move the hub into WSL."), then a
-  development build (every target: "…a development build…; there is no release binary"), a hub
-  whose binary supplies no release lookup ("This build of YAAC cannot move its hub."), not
-  connected ("Connect it first."), no `hubHost` capability ("Update YAAC on that target first.").
-  Only targets left after that are probed, on their existing connection. Their probe must say:
-  Linux; an arch with a published hub (`x86_64` for now); Tailscale running; the same login as
-  this hub's own node (`tailscale` on this computer, compared without case); a Tailscale
-  address that is not one of this computer's; 47380 free; no hub already running. A WSL distro
-  that fails the Tailscale checks gets the WSL sentence above. Every row has a sentence when it is not eligible. While a transfer runs,
-  every row says the hub is already moving.
+- **Eligibility** (`hub/transfer/candidates`): the transport first. SSH is allowed. WSL is
+  allowed only when the hub's `TransferHost` names this PC's `yaac.exe` for WSL, so only from
+  YAAC for Windows: "Only YAAC for Windows can move the hub into WSL." `windowsInterop` is
+  allowed. Then, for SSH and WSL only, a development build ("…a development build…; there is
+  no release binary") and a hub whose binary supplies no release lookup ("This build of YAAC
+  cannot move its hub."). Then for every target: not connected ("Connect it first."), no
+  `hubHost` capability ("Update YAAC on that target first."). Only targets left after that are
+  probed, on their existing connection. `judge` takes the probe as [above](#which-targets-can-take-the-hub-p408).
+  `warning` adds the phone sentence; it compares logins without case and treats an address of
+  this computer's own as none. While a transfer runs, every row says the hub is already moving.
+- **To Windows** the install step is skipped (phase `installing` never shows). After the
+  quiesce the rewrite is [`ToWindows`](#the-rewritten-hubjson-p410), and `hubHost/start`
+  has `startHub: true`. `yaacd` on Windows places the files where `yaac.exe hub-info` says,
+  removes the PC's `moved.json`, and runs `yaac.exe autostart sync --start`
+  ([03](03-protocol.md#hub-transfer)).
 - **Release asset**: a `TransferHost` (`yaac_hub::transfer`) supplied by the `yaac` binary
   (`updater::HubTransfer`). It finds the release of exactly this build and the manifest asset
   `yaac-hub-linux-<arch>` (URL, SHA-256, size), and it turns start-at-login off. Builds without
@@ -167,6 +187,9 @@ request carries the transfer's `opId`.
   the list, disabled, with "On <pc>: reachable only by a hub on that PC" (the target's
   `movedUnreachable` field). Their threads stay in
   their `yaacd` journals; moving the hub back brings them back.
+- **To this PC's Windows** (from a hub in its WSL): X becomes `local`, the old hub's own `local`
+  target becomes `wsl {distro}` again (`WSL_DISTRO_NAME`; from an SSH server it is unreachable
+  as above), and the other WSL and SSH targets stay.
 - **Into this PC's WSL** they stay usable. The other distros keep `transport: wsl`: a hub inside
   WSL finds `wsl.exe` through interop (`/mnt/c/Windows/System32/wsl.exe`, else `wsl.exe` on
   `PATH`, else `YAAC_WSL_EXE`). The PC's local target becomes `transport: windowsInterop, exe:
@@ -221,13 +244,42 @@ small Windows process, the **keeper**, runs it instead:
   says that the hub in WSL is stopped first and that whatever changed there since the move stays
   there.
 
+## The PC's window (P415)
+
+The PC's window reaches a moved hub **without Tailscale**, the way it reaches the target the hub
+moved to. Tailscale is the phones' way in. `hub/moved` and the tombstone carry `via`: the
+target's transport as the old hub reached it (`wsl`, `ssh`), or `local` for the PC's own
+Windows. The saved hub keeps it (`hubs.json`), so a later start attaches the same way.
+
+- **A bridge per attach.** The window runs one command whose standard streams reach the hub. It
+  is killed when the attach closes (`HubClient::connect_command`). The command runs `yaac
+  hub-bridge` there (`yaac_hub::interop::serve_hub_bridge`). That copies bytes between its
+  standard streams and the hub's own local socket, waiting up to 20 s for the hub to listen. So
+  the hub sees an ordinary local attach on the user's own socket. An attach is no target
+  connection, so invariant 1 is unaffected.
+  - **WSL:** `wsl.exe -d <distro> [-u <user>] --exec sh -c '<data>/bin/yaac hub-bridge'`. If the
+    keeper does not run, the window starts it first, so the distro and the hub stay up.
+  - **SSH:** the system `ssh` with the hub's own options: `BatchMode=yes` (never a prompt),
+    YAAC's known hosts, and YAAC's own key for that server when it is on the PC. Else the
+    user's `ssh` defaults. The remote command is `exec sh -c '<data>/bin/yaac hub-bridge'`. **YAAC's own
+    key stays on the PC** after the move for this bridge. It is still only the key YAAC generated
+    for that server (invariant 12); nothing else is copied or kept.
+- The entry is **This PC (in WSL: Ubuntu)** for a hub in this PC's WSL, else the server's name.
+  Under it, how it is reached and the phones' address ("phones: no Tailscale there yet" when
+  there is none). Such a hub is never started, stopped or replaced from the window (like a
+  remote hub): a build mismatch says "Move it back to this PC, or install the same build there."
+- **Back on Windows** (`via: local`) the entry is This PC again. The local attach waits (up to
+  about 25 s) while the tombstone is still there, for `yaacd` to place the files and remove it,
+  and never starts a hub itself while it exists.
+
 ## The Linux hub binary (P411)
 
 The release builds `yaac` for `x86_64-unknown-linux-gnu` with `--no-default-features --features
 hub` as the stripped release asset `yaac-hub-linux-x86_64` and lists it in `manifest.json`
 with its size and SHA-256. `yaac hub` runs headless and uses the local XDG socket and the
 same Tailscale admission as on Windows (`tailscale` on `PATH`). The binary also supports
-`yaac quit`, `yaac autostart`, and `yaac --version`.
+`yaac quit`, `yaac autostart`, `yaac hub-bridge`, and `yaac --version`. On Windows,
+`yaac hub-info` prints `{build, configDir, dataDir, runtimeDir, running, moved}` for `yaacd`.
 
 The release embeds `yaacd.mjs`. On the new local target one stage 0 process reuses the
 existing daemon and Node.js installation, with the same rules as SSH. It installs the embedded
@@ -242,17 +294,19 @@ TODO: Publish a Linux aarch64 hub build.
 Target transport: `windowsInterop { exe }`, the PC's Windows `yaacd` reached from its WSL hub.
 
 Attach (window/phone ⇄ hub):
-- `hub/transfer/candidates {}` → `{ candidates: [{ targetId, label, eligible, reason? }] }`
+- `hub/transfer/candidates {}` → `{ candidates: [{ targetId, label, eligible, reason?, warning? }] }`
 - `hub/transfer/start { opId, targetId }` → `{ }` once accepted; then progress notifications.
 - notification `hub/transfer/progress { opId, targetId, phase, done?, total?, message? }`,
   phase ∈ `checking | installing | copying | handingOver | moved | failed`.
-- notification `hub/moved { hubId, address, hostName }` — sent just before the old hub exits.
+- notification `hub/moved { hubId, address, hostName, via? }` — sent just before the old hub
+  exits. `address` is empty without Tailscale there; `via` is the target's transport (`wsl`,
+  `ssh`) or `local` (the PC's Windows).
 - error code `hub_moving` for requests refused during the hand-over.
 - error codes `transfer_not_eligible`, `transfer_in_progress`, and `transfer_unavailable` for
   a transfer start that the hub cannot accept.
 
 Daemon (hub ⇄ `yaacd` on X):
-- `hubHost/probe {}` → `{ os, arch, tailscale: { running, login?, ips[] }, portFree, hubRunning, wsl?: { distro }, lastTransfer? }`
+- `hubHost/probe {}` → `{ os, arch, tailscale: { running, login?, ips[] }, portFree, hubRunning, wsl?: { distro }, hubBuild?, lastTransfer? }`
 - `lastTransfer` is `{ opId, status, message? }` with `status` of `started`, `placed` or `failed`.
 - `hubHost/install { opId, url, sha256, size }` → `{ path }`
 - notification `hubHost/progress { opId, done, total }` reports download progress in bytes.

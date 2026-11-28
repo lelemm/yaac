@@ -143,7 +143,8 @@ export class Daemon implements FrozenCoreHost {
       ...(config.controlRefreshMs !== undefined ? { controlRefreshMs: config.controlRefreshMs } : {}),
       ...(config.takeOverWaitMs !== undefined ? { takeOverWaitMs: config.takeOverWaitMs } : {}),
     });
-    if (process.platform === "linux") {
+    const hubHostPlatform = config.hubHost?.platformForTests ?? process.platform;
+    if (hubHostPlatform === "linux" || hubHostPlatform === "win32") {
       this.hubHost = new HubHost(config.env, () => this.core.uploads.allocateStream(), (l) => this.log(l), config.hubHost);
     }
     this.core.activity.on(() => this.checkIdle());

@@ -281,6 +281,11 @@ pub fn local_config(paths: &HubPaths) -> LocalConfig {
             .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".yaac")))
             .unwrap_or_else(|| paths.data_dir.clone());
         local = local.with_env("YAAC_HOME", &home);
+        // `hubHost` on Windows runs this `yaac.exe` (`hub-info`, `autostart sync --start`) to
+        // take a moved hub back (docs/15-hub-transfer.md#to-this-pcs-windows).
+        if let Ok(exe) = std::env::current_exe() {
+            local = local.with_env("YAAC_EXE", exe);
+        }
         let runtime = install.join("runtime").join("node.exe");
         if std::env::var_os("YAAC_RUNTIME").is_none_or(|v| v.is_empty()) && runtime.is_file() {
             let dest = home.join("runtime").join(format!("node-{}", yaac_transport::runtime::PINNED_NODE)).join("node.exe");

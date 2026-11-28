@@ -131,6 +131,11 @@ pub struct MovedTombstone {
     /// `yaac wsl-hub` (docs/15-hub-transfer.md#into-this-pcs-wsl).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsl_distro: Option<String>,
+    /// How this PC's window reaches the moved hub without Tailscale (`hub/moved`'s `via`):
+    /// the target's transport (`wsl`, `ssh`). `address` is then only for phones, and may be
+    /// empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<yaac_protocol::attach::TargetTransport>,
 }
 
 /// Reads the move record. An unreadable or malformed record is an error.

@@ -89,6 +89,15 @@ pub(crate) fn restore_hub_autostart() -> Result<(), String> {
     yaac_hub::autostart::install_autostart(&entry).map_err(|e| e.to_string())
 }
 
+/// Whether a keeper runs for this process's hub profile (never outside Windows).
+pub(crate) fn running() -> bool {
+    #[cfg(windows)]
+    if let Ok(paths) = HubPaths::from_env() {
+        return yaac_winsys::named_event_exists(&instance_name(&paths));
+    }
+    false
+}
+
 /// Asks a running keeper to stop its hub (`yaac quit` in the distro) and waits until it has
 /// exited. `Ok(false)`: no keeper runs. Blocks for up to about half a minute: never on the UI
 /// thread.
@@ -234,7 +243,7 @@ mod tests {
         std::fs::create_dir_all(&paths.data_dir).unwrap();
         std::fs::create_dir_all(&paths.config_dir).unwrap();
         assert_eq!(from_tombstone(&paths), None, "no move");
-        let mut t = yaac_hub::paths::MovedTombstone { hub_id: "h".into(), address: "100.64.0.9:47380".into(), host_name: "ubuntu".into(), at_ms: 1, wsl_distro: None };
+        let mut t = yaac_hub::paths::MovedTombstone { hub_id: "h".into(), address: "100.64.0.9:47380".into(), host_name: "ubuntu".into(), at_ms: 1, wsl_distro: None, via: None };
         yaac_hub::paths::write_moved_tombstone(&paths, &t).unwrap();
         assert_eq!(from_tombstone(&paths), None, "moved, but not into WSL");
         t.wsl_distro = Some("Ubuntu".into());

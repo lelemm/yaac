@@ -1132,7 +1132,7 @@ fn transfer_rows(app: &YaacApp) -> Vec<Value> {
     {
         let view = app.transfer_view();
         let mut row = json!({ "id": "transfer", "layout": "form",
-            "detail": "Move the hub, with its threads, drafts and messages, to a Linux machine on your Tailscale network. Windows and phones follow it there." });
+            "detail": "Move the hub, with its threads, drafts and messages, to one of your targets: a WSL distro, a Linux server over SSH, or this PC's Windows. This window follows it there; phones reach it over Tailscale." });
         match &view.choices {
             Ok(choices) => {
                 let options: Vec<Value> = choices.iter().map(|c| json!({
@@ -2356,8 +2356,8 @@ mod tests {
         app.ui.settings_page = Page::Advanced;
         app.client.state.hub.attached = true;
         app.client.state.hub.transfer_candidates = Some(Ok(vec![
-            HubTransferCandidate { target_id: TargetId::new("box"), label: "box".into(), eligible: true, reason: None },
-            HubTransferCandidate { target_id: TargetId::new("wsl"), label: "Ubuntu".into(), eligible: false, reason: Some("A hub inside WSL would share Windows' Tailscale address".into()) },
+            HubTransferCandidate { target_id: TargetId::new("box"), label: "box".into(), eligible: true, reason: None, warning: None },
+            HubTransferCandidate { target_id: TargetId::new("wsl"), label: "Ubuntu".into(), eligible: false, reason: Some("A hub inside WSL would share Windows' Tailscale address".into()), warning: None },
         ]));
         let transfer = |app: &YaacApp| {
             let v = view(app, None);

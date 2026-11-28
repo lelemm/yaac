@@ -124,26 +124,34 @@ requests. They are items in the thread, answered with `request/respond`
 
 ### Hub transfer
 
-**Proposed (P408–P411).** Linux daemons advertise `hubHost` in `initialize.features`.
+**Proposed (P408–P411).** Linux and Windows daemons advertise `hubHost` in `initialize.features`.
 The current hub sends these requests over its existing target connection and uses one
 transfer `opId` throughout the attempt.
 
 | Message | Purpose |
 | --- | --- |
-| `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, wsl?, lastTransfer? }`. WSL daemons report `wsl: { distro }`, using `WSL_DISTRO_NAME` or `WSL` when only the kernel marker is available. The probe uses the distro's own `tailscale status --json` and checks port availability on its Tailscale IPs. |
-| `hubHost/install { opId, url, sha256, size }` | Downloads the release binary over HTTPS, verifies size and SHA-256, and returns its executable staged `{ path }` under `transfer-<opId>/bin/yaac` in the YAAC data directory. |
+| `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, hubBuild?, wsl?, lastTransfer? }`. WSL daemons report `wsl: { distro }`, using `WSL_DISTRO_NAME` or `WSL` when only the kernel marker is available. The probe uses the target's own `tailscale status --json` and checks port availability on its Tailscale IPs. On Windows, a successful `hub-info` supplies the installed `hubBuild` and `hubRunning`. |
+| `hubHost/install { opId, url, sha256, size }` | On Linux, downloads the release binary over HTTPS, verifies size and SHA-256, and returns its executable staged `{ path }` under `transfer-<opId>/bin/yaac` in the YAAC data directory. Windows transfers use the installed YAAC executable and reject this request. |
 | `hubHost/progress { opId, done, total }` | Daemon notification with download progress in bytes. |
 | `hubHost/put { opId, name, size, sha256 }` | Opens a file stream and returns `{ stream, credit }`. Send bytes in data frames on that stream. The daemon grants additional byte credit via `stream/credit` and verifies size and SHA-256 before publishing the staged file. |
 | `hubHost/putComplete { stream, message? }` | Daemon notification after staging and verification. A message indicates failure. Wait for this outcome before advancing. |
-| `hubHost/start { opId, armOnClose: true, startHub? }` | Validates staging and returns `{ armed: true }`. When this connection closes, the daemon promotes the files into the hub's XDG config and data directories and saves any replaced files under `transfer-<opId>/replaced/`. `startHub` defaults to `true`. With `false`, the Windows keeper can start the WSL hub after placement. |
+| `hubHost/start { opId, armOnClose: true, startHub? }` | Validates staging and returns `{ armed: true }`. When this connection closes, the daemon promotes the files into the hub's config and data directories and saves replaced files under `transfer-<opId>/replaced/`. `startHub` defaults to `true`. With `false`, the Windows keeper can start the WSL hub after placement. |
 | `hubHost/abort { opId }` | Disarms the hand-over and discards staging. Returns `{}`. |
 
-The accepted paths are `config/hub.json`, `data/{cache,relay,drafts}.sqlite`, `bin/yaac`,
+The accepted paths are `config/hub.json`, `data/{cache,relay,drafts}.sqlite`,
 and YAAC-managed key files under `data/keys/<file>` or `data/ssh/keys/<server>/id_ed25519[.pub]`.
+Linux daemons also accept `bin/yaac`.
 `data/ssh/known_hosts` carries the host keys already trusted by the old hub.
 The daemon discards incomplete files when the transfer is aborted or the connection closes.
-With `startHub: true`, the target uses `yaac-hub.service` when a systemd user manager is available.
-Other targets use YAAC's autostart command or launch the hub detached with output in `hub.log`.
+
+Linux uses the hub's XDG profile and, with `startHub: true`, starts `yaac-hub.service` when a
+systemd user manager is available. Otherwise it uses YAAC's autostart command or starts the hub
+detached with output in `hub.log`. Windows gets its profile directories from `%YAAC_EXE% hub-info`
+and stages files under the reported `dataDir`. After promotion, it deletes `dataDir/moved.json`
+so the hub can start on that PC again. With `startHub: true`, it calls
+`%YAAC_EXE% autostart sync --start` to sync the `YAAC hub` Run entry and start the hub when
+`hub.always` is enabled. If the command prints `off`, the daemon starts `%YAAC_EXE% hub` detached.
+
 With `startHub: false`, daemon actions end at file placement. The daemon atomically records
 `{ opId, status, message? }` in `transfer-<opId>.result` in the hub data directory and returns
 the latest record as `lastTransfer`. The status is `started` after the daemon starts the hub, `placed`

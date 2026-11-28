@@ -110,7 +110,7 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.HUB_HOST_START:
         return this.hubHost().start(this.view, p as unknown as HubHostStartParams);
       case METHODS.HUB_HOST_ABORT:
-        this.hubHost().abort(this.view, p as unknown as HubHostAbortParams);
+        await this.hubHost().abort(this.view, p as unknown as HubHostAbortParams);
         return {};
       case METHODS.DIAGNOSTICS_TROUBLESHOOT:
         return core.troubleshooter.run({

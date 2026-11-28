@@ -2032,6 +2032,12 @@ export interface HubHostLastTransfer {
  */
 export interface HubHostProbeResult {
   arch: string;
+  /**
+   * The build of a YAAC already installed on this target that can run the hub there without
+   * `hubHost/install` (Windows: the `yaac.exe` in `YAAC_EXE`, from `yaac hub-info`). Absent:
+   * none (on Windows the target is then not a candidate).
+   */
+  hubBuild?: string | null;
   hubRunning: boolean;
   lastTransfer?: HubHostLastTransfer | null;
   os: string;

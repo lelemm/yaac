@@ -187,6 +187,35 @@ impl HubClient {
         Ok(client)
     }
 
+    /// Attaches through a command whose standard streams reach the hub: `wsl.exe … yaac
+    /// hub-bridge` or `ssh … yaac hub-bridge`, how the PC's window reaches a hub that moved
+    /// there (docs/15-hub-transfer.md#the-pcs-window). The command is killed when the client
+    /// closes; its standard error is discarded.
+    pub fn connect_command(mut command: std::process::Command, waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        use std::process::Stdio;
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command.spawn()?;
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill();
+            return Err(std::io::Error::other("the bridge's standard streams were not captured"));
+        };
+        let mut client = Self::start(stdout, stdin, waker)?;
+        let child = Mutex::new(Some(child));
+        client.closer = Some(Box::new(move || {
+            if let Some(mut child) = child.lock().ok().and_then(|mut c| c.take()) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }));
+        Ok(client)
+    }
+
     fn start(
         mut reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,

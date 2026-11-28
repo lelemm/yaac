@@ -46,6 +46,53 @@ pub struct AttachConfig {
     /// hub is never started, stopped or replaced from here; `paths` then only places this
     /// client's own files.
     pub remote: Option<String>,
+    /// A hub that moved to one of this PC's targets, reached the way that target is
+    /// (docs/15-hub-transfer.md#the-pcs-window): a command whose standard streams reach the
+    /// hub (`wsl.exe … yaac hub-bridge`, `ssh … yaac hub-bridge`). Never started, stopped or
+    /// replaced from here, like a remote hub, except that a hub in this PC's WSL has its keeper
+    /// started when it does not run.
+    pub bridge: Option<Bridge>,
+}
+
+/// A command whose standard streams reach a hub that moved to one of this PC's targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bridge {
+    /// `wsl.exe` or `ssh`.
+    pub program: std::ffi::OsString,
+    pub args: Vec<std::ffi::OsString>,
+    /// Who it reaches, for messages (`Ubuntu (WSL)`, `me@box:22`).
+    pub label: String,
+    /// A hub in this PC's WSL: its keeper, started when it does not run.
+    pub keeper: Option<yaac_hub::transfer::WslKeeper>,
+}
+
+impl Bridge {
+    /// The bridge to a hub that moved to the target `via` (`wsl`, `ssh`), with this PC's hub
+    /// files `local` (YAAC's own SSH key for that server and its confirmed host keys are kept
+    /// there, invariant 12). `None` for any other transport.
+    pub fn to(via: &yaac_protocol::attach::TargetTransport, local: &HubPaths) -> Option<Self> {
+        use yaac_protocol::attach::TargetTransport;
+        match via {
+            TargetTransport::Wsl(w) => {
+                let program = std::env::var_os("YAAC_WSL_EXE").filter(|v| !v.is_empty()).unwrap_or_else(|| "wsl.exe".into());
+                let args = yaac_hub::transfer::wsl_bridge_argv(&w.distro, w.user.as_deref()).into_iter().map(Into::into).collect();
+                let keeper = yaac_hub::transfer::WslKeeper { distro: w.distro.clone(), user: w.user.clone(), op: None };
+                Some(Self { program, args, label: format!("{} (WSL)", w.distro), keeper: Some(keeper) })
+            }
+            TargetTransport::Ssh(t) => {
+                let defaults = yaac_hub::ssh::SshDefaults::new(&local.data_dir, &local.runtime_dir, None, Vec::new());
+                let args = defaults.command_args(t, &yaac_hub::transfer::ssh_bridge_remote());
+                Some(Self { program: defaults.ssh_exe, args, label: yaac_hub::ssh::Ident::from_transport(t).label(), keeper: None })
+            }
+            _ => None,
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut c = Command::new(&self.program);
+        c.args(&self.args);
+        c
+    }
 }
 
 impl AttachConfig {
@@ -54,23 +101,32 @@ impl AttachConfig {
         let paths = HubPaths::from_env().map_err(|e| e.to_string())?;
         let exe = std::env::current_exe().map_err(|e| format!("cannot find the yaac binary: {e}"))?;
         let autostart = Autostart::from_env(exe.clone()).ok();
-        Ok(Self { paths, exe, autostart, start_timeout: Duration::from_secs(8), remote: None })
+        Ok(Self { paths, exe, autostart, start_timeout: Duration::from_secs(8), remote: None, bridge: None })
     }
 
     /// A hub on another machine at `address` (`host:port`); `paths` holds this client's files.
     pub fn remote(address: String, paths: HubPaths) -> Self {
-        Self { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(10), remote: Some(address) }
+        Self { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(10), remote: Some(address), bridge: None }
     }
 
-    /// Whether the hub is on another machine (never started or replaced by this client).
+    /// A hub that moved to one of this PC's targets, through `bridge`; `paths` holds this
+    /// client's files.
+    pub fn bridged(bridge: Bridge, paths: HubPaths) -> Self {
+        Self { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(25), remote: None, bridge: Some(bridge) }
+    }
+
+    /// Whether the hub is not this PC's local one (never started or replaced by this client).
     pub fn is_remote(&self) -> bool {
-        self.remote.is_some()
+        self.remote.is_some() || self.bridge.is_some()
     }
 
     /// What a client of a hub on another machine says when the builds differ: it never
     /// replaces or restarts that hub (docs/14-android.md), so the hub's own advice (send
     /// `hub/shutdown`, update this window) does not apply. `None` for the local hub.
     pub fn mismatch_text(&self) -> Option<String> {
+        if let Some(b) = &self.bridge {
+            return Some(format!("The hub on {} is a different YAAC build. Move it back to this PC, or install the same build there.", b.label));
+        }
         let address = self.remote.as_deref()?;
         Some(format!(
             "The hub on {} is a different YAAC build. Update YAAC on the PC or on this phone so they match.",
@@ -105,8 +161,38 @@ mod tests {
         assert_eq!(machine_name("100.64.0.7:47380"), "100.64.0.7");
         assert_eq!(machine_name("[fd7a:115c::1]:47380"), "fd7a:115c::1");
         assert_eq!(machine_name("desk"), "desk");
-        let local = AttachConfig { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(1), remote: None };
+        let local = AttachConfig { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(1), remote: None, bridge: None };
         assert!(local.mismatch_text().is_none());
+    }
+
+    #[test]
+    fn the_window_reaches_a_moved_hub_the_way_it_reached_its_target() {
+        use yaac_protocol::attach::TargetTransport;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = HubPaths::under(dir.path());
+        let wsl: TargetTransport = serde_json::from_value(serde_json::json!({ "kind": "wsl", "distro": "Ubuntu", "user": "dev" })).unwrap();
+        let b = Bridge::to(&wsl, &paths).unwrap();
+        let args: Vec<String> = b.args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, yaac_hub::transfer::wsl_bridge_argv("Ubuntu", Some("dev")));
+        assert_eq!(b.keeper.as_ref().map(|k| k.distro.as_str()), Some("Ubuntu"));
+        let config = AttachConfig::bridged(b, paths.clone());
+        assert!(config.is_remote(), "never started or replaced from here");
+        assert!(config.mismatch_text().unwrap().contains("Ubuntu (WSL)"));
+
+        // SSH: YAAC's own key for that server when it is here, its known hosts, never prompts.
+        let ssh: TargetTransport = serde_json::from_value(serde_json::json!({ "kind": "ssh", "host": "box", "user": "me" })).unwrap();
+        let text = |b: &Bridge| b.args.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let plain = text(&Bridge::to(&ssh, &paths).unwrap());
+        assert!(plain.contains(&"BatchMode=yes".to_owned()) && !plain.iter().any(|a| a.starts_with("IdentityFile=")));
+        assert!(plain.iter().any(|a| a.contains("known_hosts")));
+        assert_eq!(plain.last().unwrap(), &yaac_hub::transfer::ssh_bridge_remote());
+        let TargetTransport::Ssh(t) = &ssh else { unreachable!() };
+        let key = yaac_hub::ssh::SshDefaults::new(&paths.data_dir, &paths.runtime_dir, None, Vec::new()).key(&yaac_hub::ssh::Ident::from_transport(t));
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "k").unwrap();
+        let keyed = text(&Bridge::to(&ssh, &paths).unwrap());
+        assert!(keyed.iter().any(|a| a.starts_with("IdentityFile=")) && keyed.contains(&"IdentitiesOnly=yes".to_owned()));
+        assert!(Bridge::to(&TargetTransport::Local(Default::default()), &paths).is_none());
     }
 }
 
@@ -194,6 +280,9 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[String], paths: &yaac_hub::
 
 fn connect(config: &AttachConfig, waker: &Waker) -> std::io::Result<HubClient> {
     let w = waker.clone();
+    if let Some(bridge) = &config.bridge {
+        return HubClient::connect_command(bridge.command(), move || w());
+    }
     match &config.remote {
         Some(address) => connect_remote(address, waker),
         None => HubClient::connect_with_waker(&config.paths.socket(), move || w()),
@@ -218,11 +307,38 @@ fn connect_remote(address: &str, waker: &Waker) -> std::io::Result<HubClient> {
 /// Connects to a running hub, or starts one and waits for it to listen.
 fn connect_or_start(config: &AttachConfig, waker: &Waker, slot: &Mutex<Slot>) -> Result<HubClient, String> {
     if config.is_remote() {
+        // A hub in this PC's WSL: its keeper keeps the distro and the hub running.
+        if let Some(keeper) = config.bridge.as_ref().and_then(|b| b.keeper.as_ref())
+            && !crate::wsl_keeper::running()
+            && cfg!(windows)
+            && let Err(e) = crate::wsl_keeper::start(keeper)
+        {
+            return Err(format!("could not start the hub in WSL: {e}"));
+        }
         // Another machine's hub: connect or say why; it is never started from here.
         return connect(config, waker).map_err(|e| format!("could not reach the hub: {e}"));
     }
     if let Ok(c) = connect(config, waker) {
         return Ok(c);
+    }
+    // The hub moved back here, and `yaacd` is placing its files: they remove the tombstone
+    // and start it. Never start a hub that has moved (it would refuse anyway).
+    if config.paths.moved_file().is_file() {
+        let deadline = Instant::now() + config.start_timeout * 3;
+        while config.paths.moved_file().is_file() {
+            if Instant::now() >= deadline {
+                return Err("the hub moved away from this PC".into());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let deadline = Instant::now() + config.start_timeout;
+        loop {
+            match connect(config, waker) {
+                Ok(c) => return Ok(c),
+                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => break,
+            }
+        }
     }
     // No hub is listening. A missing settings file means this is the first run: the owner
     // decided the hub starts at login, so the entry is installed now (Settings can turn it off).

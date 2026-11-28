@@ -504,6 +504,11 @@ pub struct HubTransferCandidate {
     /// Why this target cannot take the hub, in words for the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// What the user should know before moving the hub there, in words for the user: phones
+    /// reach a moved hub only over that machine's Tailscale (none running there, or another
+    /// login than this hub's). Shown in the confirmation; it never decides eligibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// `hub/transfer/candidates` result: every target, including those that cannot take the hub.
@@ -570,9 +575,15 @@ pub mod hub_transfer {
 #[serde(rename_all = "camelCase")]
 pub struct HubMoved {
     pub hub_id: String,
-    /// The new hub's Tailscale socket address, including its port.
+    /// The new hub's Tailscale socket address, including its port: how phones reach it. Empty
+    /// when Tailscale does not run where the hub went (phones cannot follow until it does).
     pub address: String,
     pub host_name: String,
+    /// How the PC's window reaches the new hub without Tailscale: the transport of the target
+    /// it moved to, as the old hub reached it (`wsl`, `ssh`), or `local` when it moved to the
+    /// PC's own Windows. Absent from older hubs: the window then uses `address`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<TargetTransport>,
 }
 
 /// `hub/shutdown` params.

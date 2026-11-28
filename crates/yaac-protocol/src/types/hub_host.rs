@@ -50,6 +50,11 @@ pub struct HubHostProbeResult {
     pub hub_running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsl: Option<HubHostWsl>,
+    /// The build of a YAAC already installed on this target that can run the hub there without
+    /// `hubHost/install` (Windows: the `yaac.exe` in `YAAC_EXE`, from `yaac hub-info`). Absent:
+    /// none (on Windows the target is then not a candidate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_build: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_transfer: Option<HubHostLastTransfer>,
 }

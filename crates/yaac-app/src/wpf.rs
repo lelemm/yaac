@@ -589,7 +589,8 @@ fn view(
             "pcUpdate": settings::host_update_row(app),
             // The hub moved (`hub/moved`, docs/15-hub-transfer.md): where it is now; null until
             // then. The phone restarts that hub's controller there; the desktop follows itself.
-            "movedTo": state.hub.moved.as_ref().map(|m| json!({ "hubId": m.hub_id, "address": m.address, "hostName": m.host_name })),
+            // No address (no Tailscale where the hub went): null, the phone cannot follow yet.
+            "movedTo": state.hub.moved.as_ref().filter(|m| !m.address.is_empty()).map(|m| json!({ "hubId": m.hub_id, "address": m.address, "hostName": m.host_name })),
         },
         // The desktop's saved hubs (P412): the badge (only with more than one), the drop-down's
         // rows, and Start the hub here again. Absent on the phone, which keeps its own list.

@@ -42,7 +42,11 @@ export function hubPaths(env: NodeJS.ProcessEnv) {
   return { home, configHome, config, data, runtime, autostart };
 }
 
-export type HubPaths = ReturnType<typeof hubPaths>;
+export interface HubProfilePaths {
+  config: string;
+  data: string;
+  runtime: string;
+}
 
 /** Create private subdirectories without following links below the profile roots. */
 export function prepareParent(root: string, file: string): void {
@@ -103,7 +107,7 @@ function isPresent(file: string): boolean {
   return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
 }
 
-/** An XDG config directory can be on a different mount from the staging directory. */
+/** The config directory can be on a different volume from the staging directory. */
 function moveFile(from: string, to: string): void {
   try {
     fs.renameSync(from, to);
@@ -153,8 +157,14 @@ class Promotion {
   }
 }
 
-export function promoteHubFiles(root: string, names: Iterable<string>, paths: HubPaths, service?: { file: string; content: string }): void {
+export function promoteHubFiles(
+  root: string,
+  names: Iterable<string>,
+  paths: HubProfilePaths,
+  options: { windows?: boolean; service?: { file: string; content: string; autostart: string } } = {},
+): void {
   const promotion = new Promotion(root);
+  const { service, windows } = options;
   try {
     for (const name of names) {
       const destRoot = name === HUB_CONFIG ? paths.config : paths.data;
@@ -167,15 +177,17 @@ export function promoteHubFiles(root: string, names: Iterable<string>, paths: Hu
       promotion.move(path.join(root, name), dest);
     }
     // A machine receiving the hub back may still have its own outbound tombstone.
-    promotion.backup(path.join(paths.data, "moved.json"), "data/moved.json");
+    const tombstone = path.join(paths.data, "moved.json");
+    if (!windows) promotion.backup(tombstone, "data/moved.json");
     if (service) {
       ensureDir(path.dirname(service.file));
       const unit = path.join(root, "yaac-hub.service");
       fs.writeFileSync(unit, service.content, { flag: "wx", mode: 0o600 });
       promotion.backup(service.file, "systemd/yaac-hub.service");
-      promotion.backup(paths.autostart, "autostart/yaac-hub.desktop");
+      promotion.backup(service.autostart, "autostart/yaac-hub.desktop");
       promotion.move(unit, service.file);
     }
+    if (windows) fs.rmSync(tombstone, { force: true });
   } catch (error) {
     const rollbackErrors = promotion.rollback();
     if (rollbackErrors.length) throw new Error(`${(error as Error).message}. Rollback: ${rollbackErrors.join(", ")}`);

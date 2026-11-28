@@ -10,6 +10,10 @@
 //!                                (crate::wsl_keeper)
 //! yaac local-daemon              this computer's local yaacd bridge on standard streams, for a
 //!                                hub in this PC's WSL (yaac_hub::interop)
+//! yaac hub-info                  this computer's hub as JSON: build, its directories, whether
+//!                                it runs, whether it moved (yaacd's hubHost on Windows reads it)
+//! yaac hub-bridge                standard streams to the hub's local socket: how the PC's
+//!                                window reaches a hub that moved into WSL or onto an SSH machine
 //! ```
 //!
 //! Every path comes from the same environment the window and the hub read
@@ -42,6 +46,8 @@ pub fn dispatch(args: &[String], build: &str) -> Option<ExitCode> {
         "autostart" => autostart(rest),
         yaac_hub::transfer::KEEPER_COMMAND => crate::wsl_keeper::run(rest),
         yaac_hub::interop::LOCAL_DAEMON_COMMAND => local_daemon(rest),
+        "hub-info" => hub_info(rest, build),
+        yaac_hub::interop::HUB_BRIDGE_COMMAND => hub_bridge(rest),
         #[cfg(feature = "desktop")]
         "remove-data" => remove_data(),
         _ => return None,
@@ -382,5 +388,69 @@ mod tests {
         quit_window(&paths).unwrap();
         assert!(!yaac_winsys::named_event_exists(&name), "quit returns once the window has let go");
         window.join().unwrap();
+    }
+}
+
+/// `yaac hub-info`: one line of JSON about this computer's hub, for `yaacd` (`hubHost` on
+/// Windows places a moved hub's files where this hub reads them, and starts it as this hub):
+/// `{build, configDir, dataDir, runtimeDir, running, moved}`.
+fn hub_info(args: &[String], build: &str) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("usage: yaac hub-info");
+        return ExitCode::from(2);
+    }
+    let paths = match paths() {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    println!("{}", hub_info_json(&paths, build, HubClient::connect(&paths.socket()).is_ok()));
+    ExitCode::SUCCESS
+}
+
+fn hub_info_json(paths: &HubPaths, build: &str, running: bool) -> serde_json::Value {
+    json!({
+        "build": build,
+        "configDir": paths.config_dir,
+        "dataDir": paths.data_dir,
+        "runtimeDir": paths.runtime_dir,
+        "running": running,
+        "moved": paths.moved_file().is_file(),
+    })
+}
+
+/// `yaac hub-bridge`: this process's standard streams to the hub's local socket, byte for byte
+/// (run by the PC's window through `wsl.exe` or `ssh`, docs/15-hub-transfer.md#the-pcs-window).
+fn hub_bridge(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("usage: yaac hub-bridge");
+        return ExitCode::from(2);
+    }
+    let paths = match paths() {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    match yaac_hub::interop::serve_hub_bridge(&paths.socket(), yaac_hub::interop::BRIDGE_WAIT) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("yaac hub-bridge: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::*;
+
+    #[test]
+    fn hub_info_names_the_hubs_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = HubPaths::under(dir.path());
+        let v = hub_info_json(&paths, "0.1.0+1059", false);
+        assert_eq!(v["build"], "0.1.0+1059");
+        assert_eq!(v["dataDir"], json!(paths.data_dir));
+        assert_eq!(v["configDir"], json!(paths.config_dir));
+        assert_eq!(v["running"], false);
+        assert_eq!(v["moved"], false);
     }
 }
