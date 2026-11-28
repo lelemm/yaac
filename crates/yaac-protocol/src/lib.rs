@@ -28,6 +28,7 @@ mod macros;
 pub mod attach;
 pub mod codegen;
 pub mod dialect;
+pub mod dialog_tree;
 pub mod flows;
 pub mod frame;
 pub mod message_chunks;

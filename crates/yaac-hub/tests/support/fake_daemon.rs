@@ -93,6 +93,10 @@ struct State {
     rate_limits: Vec<Value>,
     rate_limit_asks: Vec<bool>,
     request_answers: Vec<yaac_protocol::RequestRespondParams>,
+    /// The target inbox (`inbox/list`), and every `inbox/respond` received (P418).
+    inbox: Vec<yaac_protocol::RequestItem>,
+    channels: Vec<yaac_protocol::ChannelRegisteredParams>,
+    inbox_answers: Vec<yaac_protocol::InboxRespondParams>,
     /// Audio received per voice stream (the daemon's stream numbers).
     voice_audio: BTreeMap<u32, Vec<u8>>,
     /// Every `voice/*` request, in order: method and params as received.
@@ -348,6 +352,24 @@ impl FakeDaemon {
 
     pub fn connects(&self) -> u64 {
         self.lock().connects
+    }
+
+    /// Raises a dialog in the target inbox and tells live connections (`inbox/updated`).
+    pub fn raise_inbox(&self, request: yaac_protocol::RequestItem) {
+        self.lock().inbox.push(request.clone());
+        self.originate_notification(names::INBOX_UPDATED, json!({ "request": request }));
+    }
+
+    /// Registers a channel (as `yaacd channel` would) and tells live connections.
+    pub fn register_channel(&self, id: &str, name: &str) {
+        let c = yaac_protocol::ChannelRegisteredParams { channel_id: id.into(), name: name.into(), description: None };
+        self.lock().channels.push(c.clone());
+        self.originate_notification(names::CHANNEL_REGISTERED, serde_json::to_value(c).unwrap());
+    }
+
+    /// Every `inbox/respond` received.
+    pub fn inbox_answers(&self) -> Vec<yaac_protocol::InboxRespondParams> {
+        self.lock().inbox_answers.clone()
     }
 
     pub fn request_answers(&self) -> Vec<yaac_protocol::RequestRespondParams> {
@@ -803,6 +825,18 @@ impl FakeDaemon {
                 let cursor = (end < items.len()).then(|| yaac_protocol::PageCursor::new(format!("{snap_id}:{end}")));
                 let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, newer_cursor: None, continues_turn: None, prompts: None, required_items: None, uploads: vec![], context: None };
                 Ok(serde_json::to_value(result).unwrap())
+            }
+            names::INBOX_LIST => Ok(json!({ "requests": s.inbox, "channels": s.channels })),
+            names::INBOX_RESPOND => {
+                let p: yaac_protocol::InboxRespondParams = serde_json::from_value(params).map_err(bad)?;
+                let Some(at) = s.inbox.iter().position(|r| r.request_id == p.request_id && r.state == yaac_protocol::RequestState::Pending) else {
+                    return Err(ErrorObject::new(ErrorCode::RequestNotPending, "already answered"));
+                };
+                let mut request = s.inbox.remove(at);
+                request.state = yaac_protocol::RequestState::Resolved;
+                s.inbox_answers.push(p);
+                out.push(Message::notification(names::INBOX_UPDATED, json!({ "request": request })));
+                Ok(json!({}))
             }
             names::REQUEST_RESPOND => {
                 s.request_answers.push(serde_json::from_value(params).map_err(bad)?);
