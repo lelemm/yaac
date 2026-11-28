@@ -325,11 +325,12 @@ pub struct FeatureSet {
     missing_voice_call: bool,
     missing_voice_call_language: bool,
     missing_hub_host: bool,
+    missing_channels: bool,
 }
 
 impl FeatureSet {
     /// Every feature present.
-    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false, missing_budget_time_limit: false, missing_transcription: false, missing_voice_call: false, missing_voice_call_language: false, missing_hub_host: false };
+    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false, missing_budget_time_limit: false, missing_transcription: false, missing_voice_call: false, missing_voice_call_language: false, missing_hub_host: false, missing_channels: false };
 
     /// A version that lacks the wire support for `withheld`.
     pub const fn withholding(withheld: &'static [Capability]) -> Self {
@@ -345,6 +346,7 @@ impl FeatureSet {
         self.missing_voice_call = !features.contains(&Capability::VoiceCall);
         self.missing_voice_call_language = !features.contains(&Capability::VoiceCallLanguage);
         self.missing_hub_host = !features.contains(&Capability::HubHost);
+        self.missing_channels = !features.contains(&Capability::Channels);
         self
     }
 
@@ -356,6 +358,7 @@ impl FeatureSet {
         if method.starts_with("terminal/") { self.missing_terminal = true; }
         if method.starts_with("voice/") { self.missing_transcription = true; }
         if method.starts_with("hubHost/") { self.missing_hub_host = true; }
+        if method.starts_with("inbox/") { self.missing_channels = true; }
         if method.starts_with("voiceCall/") {
             self.missing_voice_call = true;
             self.missing_voice_call_language = true;
@@ -380,6 +383,7 @@ impl FeatureSet {
             || self.missing_transcription && *capability == Capability::Transcription
             || self.missing_voice_call && *capability == Capability::VoiceCall
             || self.missing_hub_host && *capability == Capability::HubHost
+            || self.missing_channels && *capability == Capability::Channels
             || (self.missing_voice_call || self.missing_voice_call_language) && *capability == Capability::VoiceCallLanguage)
     }
 }

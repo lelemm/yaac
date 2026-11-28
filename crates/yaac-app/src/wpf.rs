@@ -34,6 +34,7 @@ pub(crate) use composer::TextUpdates;
 mod dialogs;
 mod files;
 mod header;
+mod inbox;
 mod markdown_view;
 mod navigation;
 mod pull_requests;
@@ -475,7 +476,14 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
                     }
                 }
                 if command == "shell.visibleRequests" {
-                    if let Ok(cards) = serde_json::from_value(payload["cards"].clone()) {
+                    if let Ok(mut cards) = serde_json::from_value::<Vec<yaac_protocol::attach::RequestLocation>>(payload["cards"].clone()) {
+                        // The inbox dialog over the shell is seen while the window is (P418).
+                        if window_shown
+                            && let Some((target, request)) = &app.ui.inbox_dialog
+                            && app.client.state.inbox.request(target, request).is_some_and(|r| r.state == yaac_protocol::RequestState::Pending)
+                        {
+                            cards.push(yaac_protocol::attach::RequestLocation::inbox(target.clone(), request.clone()));
+                        }
                         app.client.set_visible_requests(cards);
                     }
                     continue;
@@ -596,6 +604,9 @@ fn view(
         // rows, and Start the hub here again. Absent on the phone, which keeps its own list.
         "hubs": hubs_view(app),
         "dialog": dialogs::view(app),
+        // External dialogs without a thread (P418): Needs you's rows, and the one shown.
+        "inbox": inbox::rows(app),
+        "inboxDialog": inbox::view(app),
         "canBack": !back.is_empty(), "canForward": !forward.is_empty(),
         "back": back, "forward": forward,
         "needs": needs, "trayTooltip": yaac_core::display::tray_tooltip(needs),
@@ -986,6 +997,7 @@ fn dispatch(
             return sidebar_view::command(app, ctx, cmd, payload);
         }
         cmd if cmd.starts_with("dialog.") => return dialogs::command(app, cmd, payload),
+        cmd if cmd.starts_with("inbox.") => return inbox::command(app, cmd, payload),
         "composer.loadHistory" => {
             app.load_composer_history();
             None

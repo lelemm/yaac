@@ -14,6 +14,8 @@ struct Card {
     order: u64,
     reviewed: bool,
     announced: bool,
+    /// Where it is, for a request with no thread label (an inbox dialog).
+    place: Option<String>,
 }
 
 struct Posted {
@@ -56,6 +58,30 @@ impl Notifications {
             thread_id: key.1.clone(),
             request_id: r.request_id.clone(),
         };
+        let created = item.started_at.as_ref().and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts.as_str()).ok()).map(|at| at.timestamp_millis());
+        self.observe_request(loc, item.id.clone(), r, created, None, now);
+    }
+
+    /// A request of a target's inbox (an integrator's dialog without a thread, P418): it is
+    /// reminded of like any other, under `place` ("<integrator> on <target>").
+    pub(super) fn observe_inbox(&mut self, target: &TargetId, r: &yaac_protocol::RequestItem, place: String, now: Instant) {
+        let loc = RequestLocation::inbox(target.clone(), r.request_id.clone());
+        self.observe_request(loc, ItemId::new(r.request_id.as_str()), r, None, Some(place), now);
+    }
+
+    /// Makes the inbox reminders of `target` exactly its open `requests`.
+    pub(super) fn snapshot_inbox(&mut self, target: &TargetId, requests: &[(yaac_protocol::RequestItem, String)]) {
+        let pending: HashSet<_> = requests.iter().filter(|(r, _)| r.state == RequestState::Pending).map(|(r, _)| &r.request_id).collect();
+        let gone: Vec<_> = self.cards.keys().filter(|loc| &loc.target == target && loc.is_inbox() && !pending.contains(&loc.request_id)).cloned().collect();
+        for loc in gone {
+            self.resolve(&loc);
+        }
+        for (r, place) in requests {
+            self.observe_inbox(target, r, place.clone(), Instant::now());
+        }
+    }
+
+    fn observe_request(&mut self, loc: RequestLocation, item: ItemId, r: &yaac_protocol::RequestItem, created_ms: Option<i64>, place: Option<String>, now: Instant) {
         if r.state != RequestState::Pending {
             self.resolve(&loc);
             return;
@@ -64,23 +90,21 @@ impl Notifications {
         let card = self.cards.entry(loc).or_insert_with(|| {
             self.order += 1;
             Card {
-                item: item.id.clone(),
+                item,
                 title: String::new(),
                 decisions: None,
                 question: matches!(r.body, RequestBody::Question(_)),
                 kind,
-                created_ms: item
-                    .started_at
-                    .as_ref()
-                    .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts.as_str()).ok())
-                    .map_or_else(now_ms, |at| at.timestamp_millis()),
+                created_ms: created_ms.unwrap_or_else(now_ms),
                 order: self.order,
                 reviewed: false,
                 announced: false,
+                place: None,
             }
         });
         card.title = title;
         card.decisions = decisions;
+        card.place = place;
         self.reconsider(now);
     }
 
@@ -143,10 +167,10 @@ impl Notifications {
 
     fn description(&self, loc: &RequestLocation) -> String {
         let card = &self.cards[loc];
-        let place = self
-            .labels
-            .get(&(loc.target.clone(), loc.thread_id.clone()))
-            .cloned()
+        let place = card
+            .place
+            .clone()
+            .or_else(|| self.labels.get(&(loc.target.clone(), loc.thread_id.clone())).cloned())
             .unwrap_or_else(|| format!("{}/{}", loc.target, loc.thread_id));
         format!("{} · {} · {}", preview(&place, 48), card.kind, card.title)
     }
@@ -154,10 +178,10 @@ impl Notifications {
     /// The feed entry for one unseen request.
     fn feed_item(&self, loc: &RequestLocation) -> attach::RequestFeedItem {
         let card = &self.cards[loc];
-        let worker = self
-            .labels
-            .get(&(loc.target.clone(), loc.thread_id.clone()))
-            .cloned()
+        let worker = card
+            .place
+            .clone()
+            .or_else(|| self.labels.get(&(loc.target.clone(), loc.thread_id.clone())).cloned())
             .unwrap_or_else(|| format!("{}/{}", loc.target, loc.thread_id));
         attach::RequestFeedItem {
             location: loc.clone(),

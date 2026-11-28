@@ -60,6 +60,8 @@ class RowState {
     val selected = mutableStateMapOf<String, Set<String>>()
     val other = mutableStateMapOf<String, String>()
     val fields = mutableStateMapOf<String, String>()
+    /** An external dialog's entered values, by input id (P418); in memory only. */
+    val dialog = mutableStateMapOf<String, Any?>()
     var showStamp by mutableStateOf(false)
 }
 
@@ -69,7 +71,7 @@ class TranscriptStates {
     fun of(thread: String, row: String) = map.getOrPut("$thread\u0000$row") { RowState() }
 }
 
-private val CardKinds = setOf("artifact", "request", "approval", "permission", "question", "form", "budget")
+private val CardKinds = setOf("artifact", "request", "approval", "permission", "question", "form", "budget", "dialog")
 private val ActivityKinds = setOf("call", "tool", "activity", "worked", "changes")
 
 /**
@@ -93,6 +95,8 @@ fun TranscriptRow(row: JsonObject, threadId: String, state: RowState, send: (Map
 private fun payload(row: JsonObject, threadId: String, a: ActionItem, includeDraft: Boolean, state: RowState): Map<String, Any?> {
     val out = linkedMapOf<String, Any?>("id" to (row["actionId"].text ?: row["id"].str), "action" to a.id, "threadId" to threadId)
     if (!includeDraft) return out
+    // An external dialog's button (P418): the values entered go with it.
+    if (a.id.startsWith("dialog:")) { out["values"] = dev.yaac.android.core.DialogValues.payload(row["dialog"]["layout"], state.dialog); return out }
     val answers = linkedMapOf<String, Any?>()
     for (q in row["questions"].objects) {
         val qid = q["id"].text ?: continue
@@ -228,6 +232,10 @@ private fun CardRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
             Details(row, state, submit)
             Attachments(row, submit)
             DisableSelection { Questions(row, state); Fields(row, state) }
+            row["dialog"].obj()?.let { d ->
+                Spacer(Modifier.height(4.dp))
+                DialogLayout(d, state.dialog) { id -> submit(ActionItem("dialog:$id", id, true, null, false, null, emptyList(), false), true) }
+            }
             row["status"].text?.let { Spacer(Modifier.height(6.dp)); T(it, type.small, c.tone(row["tone"].text, c.muted)) }
             Spacer(Modifier.height(4.dp))
             // Decisions on a request stack full width; an artifact's actions share one row.

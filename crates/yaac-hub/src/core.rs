@@ -5,6 +5,7 @@
 mod attach_tunnel;
 mod browser;
 mod host_update;
+mod inbox;
 mod notifications;
 mod limits;
 mod preview;
@@ -214,6 +215,8 @@ enum Pending {
     /// A peer request forwarded to another target; its answer goes back to the source.
     PeerForward { source: TargetId, generation: u64, peer_id: RpcId, method: &'static str },
     ProjectList,
+    /// `inbox/list` after a connection is ready (P418).
+    InboxList,
     Discovery,
     /// One target's answer to a `thread/lookup` the hub fans out.
     Lookup { lookup: u64 },
@@ -506,6 +509,8 @@ pub(crate) struct Core {
     /// `hub/transfer/candidates` requests waiting for their probes.
     candidates: HashMap<u64, transfer::Candidates>,
     transfer_serial: u64,
+    /// Each target's dialog inbox and channels, in memory only (P418, [`inbox`]).
+    inboxes: BTreeMap<TargetId, attach::TargetInbox>,
 }
 
 /// What a fanned-out lookup answers once every target has.
@@ -612,6 +617,7 @@ impl Core {
             transfer: None,
             candidates: HashMap::new(),
             transfer_serial: 0,
+            inboxes: BTreeMap::new(),
         };
         core.tailscale_on.send_replace(core.settings.hub.tailscale_attach);
         for (target, thread) in loaded.kept {
@@ -956,6 +962,7 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            attach::names::INBOX_LIST => Some(Ok(self.inbox_list())),
             attach::names::NOTIFICATIONS_SUBSCRIBE => {
                 if let Some(c) = self.clients.get_mut(&client) {
                     c.feed = true;
@@ -1674,6 +1681,7 @@ impl Core {
         self.targets.remove(&p.id);
         let id = p.id.clone();
         self.notifications.remove_target(&id);
+        self.inbox_target_removed(&id);
         self.open.retain(|(t, _), _| *t != id);
         for c in self.clients.values_mut() {
             c.subs.retain(|(t, _)| *t != id);
@@ -1986,6 +1994,7 @@ impl Core {
             }
         }
         self.refresh_target(id);
+        self.inbox_on_ready(id);
         self.send_rosters();
         // The relay: deliver what waited for this target, and hand back receipts owed to it.
         let target = id.clone();
@@ -2250,6 +2259,11 @@ impl Core {
                 let outcome = outcome.and_then(|wire| self.decode_current(id, m, wire));
                 self.respond_peer(&source, generation, peer_id, m, outcome);
             }
+            Pending::InboxList => {
+                if let Ok(result) = outcome.and_then(|w| self.decode_typed::<methods::InboxList>(id, w)) {
+                    self.inbox_listed(id, result);
+                }
+            }
             Pending::ProjectList => {
                 let Ok(result) = outcome.and_then(|w| self.decode_typed::<ProjectList>(id, w)) else { return };
                 let target = id.clone();
@@ -2410,7 +2424,11 @@ impl Core {
                 }
                 self.broadcast(&Self::routed_notification(id, &method, params));
             }
-            Inbound::Other { method, params } => self.broadcast(&Self::routed_notification(id, &method, params)),
+            Inbound::Other { method, params } => {
+                if !self.inbox_notification(id, &method, &params) {
+                    self.broadcast(&Self::routed_notification(id, &method, params));
+                }
+            }
         }
     }
 

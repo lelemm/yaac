@@ -80,6 +80,7 @@ The mechanics that do not exist on a phone map to Android mechanics that do the 
 | Back and forward | The system Back gesture; Forward and the history lists in ⋮ |
 | The tray | "Keep running in the background": a foreground service with the ongoing notification "YAAC · N need you" and **Quit** |
 | Sticky toasts | High-importance notifications with the same actions |
+| An integrator's dialog over the window (P418) | A dialog in a thread is its card, built from the layout tree (`DialogLayout`); one without a thread opens as a sheet from its row above the thread list or from its notification; Back or × closes it (a cancellation), **Later** hides it |
 | Side pane and divider | Tabs at compact width; the split at expanded width |
 | File pickers, drag and drop | The Android system pickers, and the share sheet |
 

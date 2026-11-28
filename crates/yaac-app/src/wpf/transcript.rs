@@ -84,6 +84,7 @@ fn card(app: &YaacApp, viewing: &ThreadKey, key: &ThreadKey, transcript: &Transc
     let mut parts = vec![];
     let mut questions = vec![];
     let mut fields = vec![];
+    let mut dialog = None;
     let (kind, title, text) = match &request.body {
         RequestBody::Approval(a) => {
             if let Some(cmd) = &a.command {
@@ -166,6 +167,18 @@ fn card(app: &YaacApp, viewing: &ThreadKey, key: &ThreadKey, transcript: &Transc
                 },
             )
         }
+        RequestBody::Dialog(d) => {
+            let draft = app.ui.dialog_drafts.get(&(key.target.clone(), key.thread.clone(), request.request_id.clone()));
+            dialog = Some(super::inbox::frame(d, &state.target_name(&key.target), draft, pending));
+            if pending {
+                actions.push(json!({ "id": "dialogDismiss", "label": "Dismiss", "enabled": true }));
+            }
+            let text = match &request.state {
+                RequestState::Expired => format!("Withdrawn by {}", d.source.name),
+                _ => String::new(),
+            };
+            ("dialog", d.title.clone(), text)
+        }
         RequestBody::Form(f) => (
             "form",
             f.source.clone().unwrap_or_else(|| "Form".to_owned()),
@@ -183,7 +196,7 @@ fn card(app: &YaacApp, viewing: &ThreadKey, key: &ThreadKey, transcript: &Transc
     let label = yaac_core::copies::answered_where(state, key, request, viewing)
         .map_or_else(|| label.clone(), |place| format!("{label}\n{place}"));
     json!({ "requestLocation": (request.state == RequestState::Pending).then(|| json!({ "target":key.target,"threadId":key.thread,"requestId":request.request_id })), "kind": kind, "title": title, "text": text, "tone": tone, "status": label,
-        "actions": actions, "parts": parts, "questions": questions, "fields": fields })
+        "actions": actions, "parts": parts, "questions": questions, "fields": fields, "dialog": dialog })
 }
 
 fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Transcript, item: &Item, markdown: &mut super::markdown_view::MarkdownView, task: bool) -> Option<Value> {
@@ -928,7 +941,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             app.apply(vec![Action::OpenAt(copy.worker, Some(copy.item))]);
             return Ok(());
         }
-        if !matches!(act, "checkLatest" | "answerQuestions") && !act.starts_with("approval:") && !act.starts_with("permission:") {
+        if !matches!(act, "checkLatest" | "answerQuestions" | "dialogDismiss") && !act.starts_with("approval:") && !act.starts_with("permission:") && !act.starts_with("dialog:") {
             return Ok(());
         }
         (copy.worker, copy.item)
@@ -1094,6 +1107,13 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                 return Ok(());
             };
             if r.state != RequestState::Pending {
+                return Ok(());
+            }
+            if let RequestBody::Dialog(d) = &r.body {
+                let (d, request) = (d.clone(), r.request_id.clone());
+                let a = super::inbox::answer(app, (k.target.clone(), k.thread.clone(), request.clone()), &d, id, p)?;
+                let summary = yaac_core::dialogs::summary(&d, &a);
+                app.apply(vec![Action::Respond { viewing, key: k, request, response: yaac_core::dialogs::response(a), summary }]);
                 return Ok(());
             }
             let Some(response) = answer(r, id, p) else {
@@ -1517,4 +1537,9 @@ mod tests {
         assert!(new.get("rowChanges").is_none());
         assert_eq!(new["rows"][0]["text"], "second");
     }
+}
+
+#[cfg(test)]
+pub(super) fn render_for_tests(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Transcript, item: &Item, markdown: &mut super::markdown_view::MarkdownView) -> Option<Value> {
+    render(app, map, key, transcript, item, markdown, false)
 }

@@ -9,6 +9,8 @@ use crate::macros::open_enum;
 open_enum! {
     /// A flag the UI checks before offering a feature. Branch on these, never on provider kind.
     pub enum Capability fallback Unknown {
+        /// Target accepts integrator channels and exposes a dialog inbox.
+        Channels = "channels",
         /// This target supports loopback web previews.
         PortForward = "portForward",
         /// This target's `yaacd` supports the `hubHost/*` hub transfer methods.

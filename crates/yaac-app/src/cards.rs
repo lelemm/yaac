@@ -110,6 +110,7 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &Threa
             (RequestBody::Approval(a), _) => requests::approval_title(a).to_owned(),
             (RequestBody::Question(_), _) => "Question".to_owned(),
             (RequestBody::Form(_), _) => "Form".to_owned(),
+            (RequestBody::Dialog(d), _) => d.title.clone(),
             _ => "Request".to_owned(),
         };
         match &st {
@@ -121,6 +122,9 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &Threa
                     });
                     ui.label(egui::RichText::new(&title).font(theme::bold(size::SECTION)));
                 });
+                if let RequestBody::Dialog(d) = &r.body {
+                    crate::dialog_ui::source(ui, &p, d, &target);
+                }
                 ui.add_space(6.0);
                 if !actionable {
                     body_summary(ui, v, r, perm.as_ref());
@@ -162,6 +166,7 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &Threa
                         approval_buttons(ui, v, viewing, key, r, &a.decisions, item, actions);
                     }
                     (RequestBody::Question(q), _) => question_body(ui, v, viewing, key, r, q, item, actions),
+                    (RequestBody::Dialog(d), _) => dialog_body(ui, v, viewing, key, r, d, actions),
                     (RequestBody::Form(f), _) => {
                         ui.label(&f.message);
                         ui.label(widgets::secondary("This form must be answered in the harness itself.", &p));
@@ -173,6 +178,9 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &Threa
             }
             CardState::Submitted { summary } => {
                 header_line(ui, &p, "Submitted", None);
+                if let RequestBody::Dialog(d) = &r.body {
+                    ui.label(egui::RichText::new(&d.title).font(theme::bold(size::UI)));
+                }
                 ui.label(format!("You chose: {summary}"));
                 ui.horizontal(|ui| {
                     widgets::icon(ui, 14.0, |pa, c, d| icons::dashed_circle(pa, c, d * 0.4, egui::Stroke::new(1.4, p.text2)));
@@ -195,7 +203,10 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &Threa
             }
             CardState::Expired => {
                 header_line(ui, &p, "Expired", Some(Mark::Failed));
-                ui.label("No longer needed · the turn ended before this was answered.");
+                match &r.body {
+                    RequestBody::Dialog(d) => ui.label(format!("{} · withdrawn by {}.", d.title, d.source.name)),
+                    _ => ui.label("No longer needed · the turn ended before this was answered."),
+                };
             }
             CardState::OutcomeUnknown => {
                 ui.horizontal(|ui| {
@@ -503,5 +514,33 @@ fn permission_body(
             actions.push(Action::SetAgents(key.clone(), yaac_core::state::AgentsPolicy::Allow));
         }
         actions.push(Action::Respond { viewing: viewing.clone(), key: key.clone(), request: r.request_id.clone(), response, summary });
+    }
+}
+
+/// An external dialog in a thread (P418): its layout, its buttons, and Dismiss. A press that
+/// passes validation answers once; Dismiss tells the integrator the user cancelled.
+fn dialog_body(
+    ui: &mut egui::Ui,
+    v: &mut View<'_>,
+    viewing: &ThreadKey,
+    key: &ThreadKey,
+    r: &RequestItem,
+    d: &yaac_protocol::DialogRequest,
+    actions: &mut Vec<Action>,
+) {
+    let p = v.p;
+    let draft_key = (key.target.clone(), key.thread.clone(), r.request_id.clone());
+    let draft = v.ui.dialog_drafts.entry(draft_key).or_insert_with(|| yaac_core::dialogs::DialogDraft::new(&d.layout));
+    let mut answer = None;
+    if let Some(button) = crate::dialog_ui::layout(ui, &p, d, draft, r.request_id.as_str()) {
+        answer = crate::dialog_ui::press(d, draft, &button);
+    }
+    ui.add_space(6.0);
+    if widgets::link(ui, &p, "Dismiss", theme::ui(size::UI)).on_hover_text(format!("{} is told you cancelled", d.source.name)).clicked() {
+        answer = Some(yaac_core::dialogs::cancel());
+    }
+    if let Some(a) = answer {
+        let summary = yaac_core::dialogs::summary(d, &a);
+        actions.push(Action::Respond { viewing: viewing.clone(), key: key.clone(), request: r.request_id.clone(), response: yaac_core::dialogs::response(a), summary });
     }
 }

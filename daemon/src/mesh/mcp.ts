@@ -50,30 +50,6 @@ export function createMeshServer(call: ToolCaller, version = "1"): McpServer {
 
 // ── Daemon side of the bridge link ─────────────────────────────────────────────────────────
 
-/** Reads a socket's first four bytes; `true` means it is a bridge (the bytes are consumed). */
-export function sniffBridge(socket: Socket): Promise<boolean> {
-  return new Promise((resolve) => {
-    let got = Buffer.alloc(0);
-    const onReadable = () => {
-      let chunk: Buffer | null;
-      while ((chunk = socket.read() as Buffer | null) !== null) {
-        got = Buffer.concat([got, chunk]);
-        if (got.length >= BRIDGE_MAGIC.length) break;
-      }
-      if (got.length < BRIDGE_MAGIC.length && !socket.readableEnded) return;
-      socket.removeListener("readable", onReadable);
-      socket.removeListener("end", onEnd);
-      const isBridge = got.length >= BRIDGE_MAGIC.length && got.subarray(0, BRIDGE_MAGIC.length).equals(BRIDGE_MAGIC);
-      const rest = isBridge ? got.subarray(BRIDGE_MAGIC.length) : got;
-      if (rest.length > 0) socket.unshift(rest);
-      resolve(isBridge);
-    };
-    const onEnd = () => onReadable();
-    socket.on("readable", onReadable);
-    socket.on("end", onEnd);
-  });
-}
-
 /** Serves one bridge connection: `handle` runs each call as the ticket's thread. */
 export function serveBridge(socket: Socket, handle: (ticket: string, call: MeshToolCall) => Promise<MeshToolResult>, log: (l: string) => void): void {
   let ticket: string | null = null;

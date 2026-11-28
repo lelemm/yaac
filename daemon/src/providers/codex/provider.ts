@@ -856,12 +856,22 @@ export class CodexProvider implements HarnessProvider {
   }
 
   private requireSessionId(thread: Thread): string {
-    if (typeof thread.sessionId !== "string" || !thread.sessionId) throw new Error("Codex did not report a session ID for the worker launch hook.");
+    if (typeof thread.sessionId !== "string" || !thread.sessionId) throw new Error("Codex did not report a session ID for the launch hook.");
     return thread.sessionId;
   }
 
   async workerSessionId(native: NativeId): Promise<string> {
     return this.requireSessionId(await this.readThreadMeta(native));
+  }
+
+  private async runLaunchHook(conn: CodexConnection, thread: Thread, beforeFirstPrompt: NonNullable<StartThreadParams["beforeFirstPrompt"]>): Promise<void> {
+    try {
+      await beforeFirstPrompt(thread.id, this.requireSessionId(thread));
+    } catch (error) {
+      // Leave the source conversation alone. Only the newly allocated thread had no prompt.
+      await conn.request("thread/delete", { threadId: thread.id }).catch(() => {});
+      throw error;
+    }
   }
 
   // ── History ──────────────────────────────────────────────────────────────────────────────
@@ -982,15 +992,7 @@ export class CodexProvider implements HarnessProvider {
       reasoningEffort?: string | null;
     } & ReportedSettings;
     const native = r.thread.id;
-    if (params.beforeFirstPrompt) {
-      try {
-        await params.beforeFirstPrompt(native, this.requireSessionId(r.thread));
-      } catch (e) {
-        // No prompt was sent. Discard the empty Codex conversation when possible.
-        await conn.request("thread/delete", { threadId: native }).catch(() => {});
-        throw e;
-      }
-    }
+    if (params.beforeFirstPrompt) await this.runLaunchHook(conn, r.thread, params.beforeFirstPrompt);
     // The mesh's ticket is bound to the thread before its first turn runs.
     bind?.(native);
     const st = this.state(native);
@@ -1579,6 +1581,7 @@ export class CodexProvider implements HarnessProvider {
       ...(mode ? { approvalPolicy: mode.approvalPolicy, sandbox: mode.sandbox } : {}),
       ...extras,
     })) as { thread: Thread; model?: string; reasoningEffort?: string | null } & ReportedSettings;
+    if (opts.beforeFirstPrompt) await this.runLaunchHook(conn, r.thread, opts.beforeFirstPrompt);
     bind?.(r.thread.id);
     const st = this.state(r.thread.id);
     st.subscribed = true;

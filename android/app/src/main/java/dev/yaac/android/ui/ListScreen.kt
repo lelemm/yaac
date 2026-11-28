@@ -179,6 +179,8 @@ fun ListScreen(sidebar: JsonElement?, shell: JsonElement?, send: (String, Any?) 
                     item("searchMore") { TextAction(more.label, more.enabled, modifier = Modifier.padding(horizontal = 6.dp)) { send("sidebar.searchMore", mapOf("query" to sidebar["search"].str)) } }
                 }
             } else {
+                // Dialogs integrators raised without a thread (P418), above every thread.
+                if (shell["inbox"].list.isNotEmpty()) item("inbox") { InboxRows(shell["inbox"], send) }
                 for (section in sections) {
                     val sid = section["id"].str
                     val header = section["header"].obj()

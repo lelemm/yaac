@@ -5,6 +5,7 @@ import { Terminals } from "./terminals.js";
 import { VoiceSessions } from "../voice/sessions.js";
 import { MAX_SDP_BYTES, VoiceCalls } from "../voice/calls.js";
 import { isLanguageTag } from "../voice/language.js";
+import { Channels } from "./channels.js";
 import type { ConnectionView } from "../protocol/connection.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
@@ -89,7 +90,7 @@ import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js
 import { ProjectStore, matchProject, projectRefFor, userProjectRef } from "./projects.js";
 import { FolderTrust } from "./trust.js";
 import { Limiter } from "../util/exec.js";
-import { loadWorkerLaunchHook, type WorkerLaunchIdentity } from "./worker-launch.js";
+import { loadLaunchHook, type LaunchIdentity } from "./worker-launch.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
 export const ITEM_READ_MAX = 512 * 1024;
@@ -370,6 +371,7 @@ export class Core {
   readonly commandExplanations: CommandExplanations;
   readonly index: ThreadIndex;
   readonly ops: OpLog;
+  readonly channels: Channels;
   readonly uploads: UploadStore;
   readonly projects: ProjectStore;
   readonly gitStatus: GitStatusStore;
@@ -419,6 +421,20 @@ export class Core {
     for (const f of opts.factories) this.registry.registerKind(f);
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
+    this.channels = new Channels(opts.home, {
+      thread: (id, nativeThreadId) => {
+        const rt = id ? this.threads.get(id) : this.threadForDialog(nativeThreadId);
+        return rt && !rt.deleted ? { id: rt.id, turnId: rt.activeTurn ?? "" } : undefined;
+      },
+      publishThread: (threadId, item, started) => {
+        const rt = this.threads.get(threadId)!;
+        this.append(rt, { type: started ? "itemStarted" : "itemUpdated", item }, undefined, true);
+        this.updateIndex(rt);
+      },
+      broadcast: (method, params) => this.broadcast(method, params),
+      activity: () => setImmediate(() => this.activity.emit()),
+      log: opts.log,
+    });
     this.projects = new ProjectStore(path.join(opts.home, "projects.json"));
     this.folderTrust = new FolderTrust(path.join(opts.home, "folder-trust.json"), opts.log);
     this.git = gitRunner(opts.env);
@@ -468,6 +484,7 @@ export class Core {
     this.registry.load();
     await this.registry.probe();
     await this.reconcileAfterRestart();
+    this.channels.restore();
     await this.scanAll();
     // Queued user messages are delivered with no window attached.
     for (const rt of this.allThreads()) if (rt.userQueue.length > 0) this.pump(rt);
@@ -757,6 +774,7 @@ export class Core {
       rt.runningCommands.length > 0 ||
       rt.dispatching ||
       rt.pendingRequestCount() > 0 ||
+      this.channels.threadHasPending(rt.id) ||
       rt.waiting.size > 0 ||
       rt.queue.length > 0 ||
       rt.userQueue.length > 0 ||
@@ -772,6 +790,7 @@ export class Core {
 
   /** Whether a thread is in the index (listed to clients). */
   private listed(rt: ThreadRuntime): boolean {
+    if (this.channels.threadHasPending(rt.id)) return true;
     if (rt.record.metadataPending) return this.metadataFailed(rt) && rt.pendingRequestCount() > 0;
     return !rt.record.capped || !!rt.record.broughtIn || this.neverCut(rt) || this.isOpen(rt);
   }
@@ -1353,7 +1372,7 @@ export class Core {
    */
   private stateOf(rt: ThreadRuntime, depth = 0): ThreadSummary["state"] {
     const r = rt.record;
-    if (rt.pendingRequestCount() > 0) return "needsAttention";
+    if (rt.pendingRequestCount() > 0 || this.channels.threadHasPending(rt.id)) return "needsAttention";
     if (r.hold) return "stopped";
     if (rt.waiting.size > 0) return "waiting";
     if (rt.activeTurn) return "running";
@@ -1547,7 +1566,7 @@ export class Core {
 
   busy(): { runningTurns: number; pendingRequests: number; runningCommands: number } {
     let runningTurns = 0;
-    let pendingRequests = 0;
+    let pendingRequests = this.channels.waiting;
     let runningCommands = this.terminals.list().length;
     for (const rt of this.threads.values()) {
       if (rt.deleted) continue;
@@ -1672,6 +1691,7 @@ export class Core {
             if (r.resolution) item.resolution = r.resolution;
           }
         }
+        for (const item of this.channels.threadItems(rt.id)) p.upsert(item);
         rt.projection = p;
         return p;
       })().finally(() => {
@@ -1731,6 +1751,7 @@ export class Core {
         const required = [...rt.requests.values()]
           .filter((r) => (r.state === "pending" || r.state === "submitted") && !included.has(r.itemId))
           .flatMap((r) => projection.get(r.itemId) ?? []);
+        required.push(...this.channels.threadItems(rt.id).filter((item) => !included.has(item.id)));
         if (required.length) result.requiredItems = required;
         client.onSnapshot(rt.id, position);
       }
@@ -2349,10 +2370,14 @@ export class Core {
       const key = instance.config.id;
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
+      let launchStoreKey: string | null | undefined;
       try {
-        started = await provider.startThread({ cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast }, input);
+        const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(instance, provider);
+        launchStoreKey = storeKey;
+        started = await provider.startThread({ cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast, beforeFirstPrompt }, input);
       } catch (e) {
         this.finishPendingStart(key);
+        if (launchStoreKey !== undefined && e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
       }
       const firstText = parts.find((x) => x.type === "text") as { text?: string } | undefined;
@@ -2371,6 +2396,7 @@ export class Core {
           ...(typeof p.agents === "string" ? { agents: p.agents } : {}),
         },
         true,
+        launchStoreKey,
       );
       const driver: Driver = { key: client.key, host: client.host };
       this.turnBegan(rt, started.turn, "user", parts, driver, undefined, p.opId);
@@ -3193,6 +3219,13 @@ export class Core {
     return rt && !rt.deleted ? rt : undefined;
   }
 
+  /** A hook knows the native conversation key but may not know its YAAC thread id. */
+  private threadForDialog(native: NativeId | undefined): ThreadRuntime | undefined {
+    if (!native) return undefined;
+    const matches = new Set(this.registry.all().flatMap(({ config }) => this.threadByNative(config.id, native) ?? []));
+    return matches.size === 1 ? matches.values().next().value : undefined;
+  }
+
   /** Journals an item yaacd itself produced (mesh items), through the provider-item path. */
   injectItem(threadId: string, type: "itemStarted" | "itemUpdated" | "itemCompleted", item: Item): void {
     const rt = this.requireThread(threadId);
@@ -3300,11 +3333,8 @@ export class Core {
     let advertisedModel: ModelId | null;
     let launchStoreKey: string | null | undefined;
     try {
-      launchStoreKey = instance.descriptor.store.key ?? null;
-      const beforeFirstPrompt = p.parent
-        ? await this.workerLaunchCallback(p.parent, instance, provider, launchStoreKey)
-        : undefined;
-      if (!beforeFirstPrompt) launchStoreKey = undefined;
+      const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(instance, provider, p.parent);
+      launchStoreKey = storeKey;
       const model = this.newThreadModel(instance, p.model);
       advertisedModel = model ?? instance.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
       started = await provider.startThread({
@@ -3341,31 +3371,41 @@ export class Core {
     return { threadId: rt.id, turnId: started.turn };
   }
 
-  private async workerLaunchCallback(
-    parent: ThreadRuntime, instance: Instance, provider: HarnessProvider, storeKey: string | null,
-  ): Promise<StartThreadParams["beforeFirstPrompt"]> {
-    const hook = loadWorkerLaunchHook(this.opts.home, this.opts.env);
-    if (!hook) return undefined;
-    const source = this.provider(parent);
-    if (!source.workerSessionId || !provider.workerSessionId) {
-      throw new Error("The configured worker launch hook needs session identities from both providers.");
+  private async firstPromptLaunch(
+    instance: Instance, provider: HarnessProvider, parent?: ThreadRuntime | null,
+  ): Promise<{ beforeFirstPrompt?: StartThreadParams["beforeFirstPrompt"]; storeKey?: string | null }> {
+    const hook = loadLaunchHook(this.opts.home, this.opts.env, parent ? "worker.beforeFirstPrompt" : "thread.beforeFirstPrompt");
+    if (!hook) return {};
+    const storeKey = instance.descriptor.store.key ?? null;
+    let parentRef: LaunchIdentity | undefined;
+    if (parent) {
+      const source = this.provider(parent);
+      if (!source.workerSessionId || !provider.workerSessionId) {
+        throw new Error("The configured worker launch hook needs session identities from both providers.");
+      }
+      const sessionId = await source.workerSessionId(parent.record.native);
+      parentRef = {
+        harness: parent.record.kind, instanceId: parent.record.instance,
+        yaacThreadId: parent.id, nativeThreadId: parent.record.native,
+        ...(sessionId === parent.record.native ? {} : { sessionId }),
+      };
+    } else if (!provider.workerSessionId) {
+      throw new Error("The configured thread launch hook needs a session identity from the provider.");
     }
-    const parentSession = await source.workerSessionId(parent.record.native);
-    const sourceRef: WorkerLaunchIdentity = {
-      harness: parent.record.kind, instanceId: parent.record.instance,
-      yaacThreadId: parent.id, nativeThreadId: parent.record.native,
-      ...(parentSession === parent.record.native ? {} : { sessionId: parentSession }),
-    };
-    return (nativeThreadId, sessionId) => hook({
-      event: "worker.beforeFirstPrompt",
-      parent: sourceRef,
-      child: {
-        harness: instance.config.kind, instanceId: instance.config.id,
-        yaacThreadId: createdThreadId(threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId)),
-        nativeThreadId,
-        ...(sessionId === nativeThreadId ? {} : { sessionId }),
+    return {
+      storeKey,
+      beforeFirstPrompt: (nativeThreadId, sessionId) => {
+        const legacyId = threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId);
+        const thread: LaunchIdentity = {
+          harness: instance.config.kind, instanceId: instance.config.id,
+          yaacThreadId: this.boundThread(legacyId)?.id ?? createdThreadId(legacyId),
+          nativeThreadId,
+          ...(sessionId === nativeThreadId ? {} : { sessionId }),
+        };
+        return hook(parentRef ? { event: "worker.beforeFirstPrompt", parent: parentRef, child: thread }
+          : { event: "thread.beforeFirstPrompt", thread });
       },
-    });
+    };
   }
 
   /** Interrupts a thread's running turn on an agent's behalf (`stop_thread`, own workers only). */
@@ -3446,6 +3486,11 @@ export class Core {
 
   async requestRespond(client: ClientLink, p: RequestRespondParams): Promise<void> {
     await this.ops.run("request/respond", p.opId, async () => {
+      if (this.channels.isDialogId(p.requestId)) {
+        if (typeof p.threadId !== "string") throw notActed("invalid_params", "threadId is required");
+        this.channels.respond(p.threadId, p.requestId, p.response, client);
+        return {};
+      }
       const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       const rec = rt.requests.get(p.requestId);
@@ -3682,12 +3727,17 @@ export class Core {
     const key = srcInst.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     try {
-      const native = await srcInst.provider!.forkThread!(src.record.native, {
+      const provider = srcInst.provider!;
+      const launch = await this.firstPromptLaunch(plan.dest, provider).catch(e => {
+        throw rpc("provider_unavailable", (e as Error).message);
+      });
+      const native = await provider.forkThread!(src.record.native, {
         atTurn: p.atTurn ?? null,
         cwd: src.record.cwd,
         model,
         effort: p.effort ?? null,
         mode: p.mode ?? null,
+        beforeFirstPrompt: launch.beforeFirstPrompt,
       }).catch(e => {
         throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
       });
@@ -3703,6 +3753,7 @@ export class Core {
           model: model ?? sourceModel,
         },
         false,
+        launch.storeKey,
       );
       const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
       const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
@@ -3744,10 +3795,14 @@ export class Core {
     const key = dest.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
+    let launchStoreKey: string | null | undefined;
     try {
-      started = await provider.startThread({ cwd: src.record.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+      const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(dest, provider);
+      launchStoreKey = storeKey;
+      started = await provider.startThread({ cwd: src.record.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, beforeFirstPrompt }, input);
     } catch (e) {
       this.finishPendingStart(key);
+      if (launchStoreKey !== undefined && e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
       throw rpc("provider_unavailable", `${dest.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
     }
     const title = `${this.summaryOf(src).title} (fork)`;
@@ -3770,6 +3825,7 @@ export class Core {
         uploadsKey,
       },
       true,
+      launchStoreKey,
     );
     const at = nowIso();
     const handoff: Item = {
@@ -3896,6 +3952,7 @@ export class Core {
   }
 
   private forget(rt: ThreadRuntime): void {
+    this.channels.threadRemoved(rt.id);
     this.mesh?.threadRemoved(rt);
     this.voice.endThread(rt.id, "The thread was removed.");
     this.calls.endThread(rt.id, "The thread was removed.");

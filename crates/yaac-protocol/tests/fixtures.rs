@@ -50,6 +50,45 @@ fn question_request_item_from_the_docs() {
 }
 
 #[test]
+fn dialog_layout_round_trips_with_runtime_choices_and_unknown_nodes() {
+    let dialog: DialogOpenParams = exact(json!({
+        "requestId": "local-1",
+        "nativeThreadId": "native-1",
+        "title": "Choose a team",
+        "layout": { "type": "column", "children": [
+            { "type": "select", "id": "team", "label": "Team", "required": true,
+              "options": [{ "value": "dev", "label": "Development", "detail": "Owns the SDK" }] },
+            { "type": "newInput", "id": "future", "required": true, "params": { "format": "future" } },
+            { "type": "row", "children": [{ "type": "button", "id": "save", "label": "Save", "kind": "primary" }] }
+        ]}
+    }));
+    let DialogNode::Column(column) = dialog.layout else { panic!("expected a column") };
+    assert!(matches!(&column.children[0], DialogNode::Select(select)
+        if select.input.required == Some(true) && select.options[0].value == "dev"));
+    assert!(matches!(&column.children[1], DialogNode::Unknown(node) if node.tag("type") == "newInput"));
+
+    assert_eq!(dialog.native_thread_id.as_deref(), Some("native-1"));
+    let opened: DialogOpenResult = exact(json!({ "accepted": true, "placement": "thread", "threadId": "yaac-thread" }));
+    assert_eq!(opened.placement, DialogPlacement::Thread);
+    let inbox: DialogOpenResult = exact(json!({ "accepted": true, "placement": "inbox" }));
+    assert!(inbox.thread_id.is_none());
+
+    let resume: ChannelRegisterParams = exact(json!({ "name": "PILOT", "resume": "channel-pilot" }));
+    assert_eq!(resume.resume.as_deref(), Some("channel-pilot"));
+    let status: DialogStatusResult = exact(json!({
+        "state": "answered", "action": "save", "values": { "team": "dev" }
+    }));
+    assert_eq!(status.state, DialogStatusState::Answered);
+
+    let params: InboxRespondParams = exact(json!({
+        "opId": "op-a", "requestId": "dialog-a",
+        "response": { "requestKind": "dialog", "action": "save", "values": { "team": "dev" }, "cancelled": false }
+    }));
+    assert!(matches!(params.response, RequestResponse::Dialog(answer)
+        if answer.action.as_deref() == Some("save") && answer.values["team"] == "dev"));
+}
+
+#[test]
 fn approval_with_offered_decisions_and_its_answer() {
     let item: Item = exact(json!({
         "id": "i2", "turnId": "t1", "status": "inProgress",

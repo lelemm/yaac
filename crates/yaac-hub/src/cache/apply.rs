@@ -74,6 +74,15 @@ impl LiveState {
 /// host.
 pub fn redact_secrets(item: &mut Item) {
     let ItemBody::Request(request) = &mut item.body else { return };
+    if let RequestBody::Dialog(dialog) = &request.body {
+        // A dialog's secret inputs (P418): their values are dropped, not masked.
+        if let Some(resolution) = request.resolution.as_mut()
+            && let Some(RequestResponse::Dialog(answer)) = resolution.answer.as_mut()
+        {
+            yaac_protocol::dialog_tree::redact(&dialog.layout, &mut answer.values);
+        }
+        return;
+    }
     let RequestBody::Question(question) = &request.body else { return };
     let secret: BTreeSet<_> = question.questions.iter().filter(|q| q.secret).map(|q| q.id.clone()).collect();
     if secret.is_empty() {

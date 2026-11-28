@@ -399,6 +399,8 @@ public partial class MainWindow : Window
         RenderScenes(shell);
         if (shell.TryGetProperty("dialog", out var dialogView))
             RenderDialog(dialogView);
+        RenderInbox(shell.TryGetProperty("inbox", out var inboxRows) ? inboxRows : default);
+        RenderInboxDialog(shell.TryGetProperty("inboxDialog", out var inboxDialog) ? inboxDialog : default);
     }
 
     private void Send(string command, object? payload = null)

@@ -1,4 +1,4 @@
-// The target user's optional adapter for the work between allocating a worker and
+// The target user's optional adapter for the work between allocating a thread and
 // sending its first prompt. This is a local subprocess interface, independent of
 // the client and mesh wire protocols.
 
@@ -15,7 +15,7 @@ const ENV_KEYS = new Set([
   "PATH", "PATHEXT", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL",
 ]);
 
-export interface WorkerLaunchIdentity {
+export interface LaunchIdentity {
   harness: string;
   instanceId: string;
   yaacThreadId: string;
@@ -26,13 +26,22 @@ export interface WorkerLaunchIdentity {
 
 export interface WorkerLaunchEvent {
   event: "worker.beforeFirstPrompt";
-  parent: WorkerLaunchIdentity;
-  child: WorkerLaunchIdentity;
+  parent: LaunchIdentity;
+  child: LaunchIdentity;
 }
 
-type LaunchHook = (event: WorkerLaunchEvent) => Promise<void>;
+export interface ThreadLaunchEvent {
+  event: "thread.beforeFirstPrompt";
+  thread: LaunchIdentity;
+}
 
-export function loadWorkerLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv): LaunchHook | null {
+type LaunchEvent = ThreadLaunchEvent | WorkerLaunchEvent;
+const WORKER_EVENT = "worker.beforeFirstPrompt";
+const THREAD_EVENT = "thread.beforeFirstPrompt";
+
+type LaunchHook = (event: LaunchEvent) => Promise<void>;
+
+export function loadLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv, eventName: LaunchEvent["event"]): LaunchHook | null {
   const filename = path.join(home, CONFIG_NAME);
   let info: fs.Stats;
   try {
@@ -52,21 +61,26 @@ export function loadWorkerLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv)
     throw new Error(`${CONFIG_NAME} must contain valid JSON.`);
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Invalid ${CONFIG_NAME}.`);
-  const { command, args = [] } = raw as { command?: unknown; args?: unknown };
+  const { command, args = [], events = [WORKER_EVENT] } = raw as { command?: unknown; args?: unknown; events?: unknown };
   if (typeof command !== "string" || !path.isAbsolute(command) || command.includes("\0") ||
       !Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string" && !arg.includes("\0")) ||
-      Object.keys(raw).some((key) => key !== "command" && key !== "args")) {
+      Object.keys(raw).some((key) => key !== "command" && key !== "args" && key !== "events")) {
     throw new Error(`${CONFIG_NAME} requires an absolute executable path in command and accepts optional string args.`);
   }
+  if (!Array.isArray(events) || !events.every((event) => event === WORKER_EVENT || event === THREAD_EVENT)) {
+    throw new Error(`${CONFIG_NAME} events must list worker.beforeFirstPrompt or thread.beforeFirstPrompt.`);
+  }
+  if (!events.includes(eventName)) return null;
   const env = Object.fromEntries(Object.entries(daemonEnv).filter(([key]) => ENV_KEYS.has(key.toUpperCase())));
   return async (event) => {
     const result = await run(command, args, {
       cwd: home, env, input: JSON.stringify(event) + "\n", timeoutMs: TIMEOUT_MS, maxBytes: MAX_OUTPUT_BYTES, killSignal: "SIGKILL",
     });
     if (result.code === 0) return;
-    if (result.failure === "timeout") throw new Error("The worker launch hook exceeded its time limit.");
-    if (result.failure === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error("The worker launch hook exceeded its output limit.");
-    if (result.code === null) throw new Error("The configured worker launch hook could not complete. Check its executable and arguments.");
+    const kind = event.event === "worker.beforeFirstPrompt" ? "worker" : "thread";
+    if (result.failure === "timeout") throw new Error(`The ${kind} launch hook exceeded its time limit.`);
+    if (result.failure === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error(`The ${kind} launch hook exceeded its output limit.`);
+    if (result.code === null) throw new Error(`The configured ${kind} launch hook could not complete. Check its executable and arguments.`);
     let reason: unknown;
     try {
       reason = (JSON.parse(result.stdout) as { reason?: unknown } | null)?.reason;
@@ -74,6 +88,6 @@ export function loadWorkerLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv)
       // Stderr and unstructured stdout may contain private diagnostics.
     }
     const detail = typeof reason === "string" && reason.length <= 500 && !/[\x00-\x1f\x7f]/.test(reason) ? reason.trim() : "";
-    throw new Error(`The worker launch hook exited with status ${result.code}.${detail ? ` ${detail}` : ""}`);
+    throw new Error(`The ${kind} launch hook exited with status ${result.code}.${detail ? ` ${detail}` : ""}`);
   };
 }

@@ -306,7 +306,7 @@ fn constants_file(schema: &Value, schema_hash: &str) -> String {
 
     // Static facts.
     out.push_str(
-        "/** Who sends a method. */\nexport type Direction = \"hostToDaemon\" | \"daemonToHost\" | \"both\";\n/** Scheduling class: control always goes before bulk. */\nexport type TrafficClass = \"control\" | \"bulk\";\n\n/** Static facts about a request method. */\nexport interface MethodInfo {\n  direction: Direction;\n  /** Part of the frozen core. */\n  frozen: boolean;\n  /** Changes state: carries an `opId` and is never retried blindly. */\n  stateChanging: boolean;\n  requestClass: TrafficClass;\n  responseClass: TrafficClass;\n}\n\n/** Static facts about every request method. */\nexport const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {\n",
+        "/** Who sends a method. */\nexport type Direction = \"hostToDaemon\" | \"daemonToHost\" | \"channelToDaemon\" | \"daemonToChannel\" | \"both\";\n/** Scheduling class: control always goes before bulk. */\nexport type TrafficClass = \"control\" | \"bulk\";\n\n/** Static facts about a request method. */\nexport interface MethodInfo {\n  direction: Direction;\n  /** Part of the frozen core. */\n  frozen: boolean;\n  /** Changes state: carries an `opId` and is never retried blindly. */\n  stateChanging: boolean;\n  requestClass: TrafficClass;\n  responseClass: TrafficClass;\n}\n\n/** Static facts about every request method. */\nexport const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {\n",
     );
     for m in &methods {
         let _ = writeln!(

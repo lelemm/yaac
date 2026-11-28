@@ -116,6 +116,7 @@ pub fn reminder_entry(r: &crate::RequestItem) -> (&'static str, String, Option<(
         RequestBody::Form(form) if form.schema.as_ref().is_some_and(|s| s["url"].is_string()) => ("Login", form.message.clone(), None),
         RequestBody::Form(f) => ("Form", f.message.clone(), None),
         RequestBody::Question(q) => ("Question", q.questions.first().map_or_else(|| "Agent question".into(), |q| q.text.clone()), None),
+        RequestBody::Dialog(d) => ("Dialog", d.title.clone(), None),
         _ => ("Request", "Input needed".into(), None),
     };
     (kind, one_line(&title, 64), decisions)
@@ -177,6 +178,10 @@ pub enum NotificationSound { Reminder, Default }
 
 /// Every attach method name.
 pub mod names {
+    /// Window → hub: every target's inbox ([`super::InboxListResult`]).
+    pub const INBOX_LIST: &str = "hub/inbox/list";
+    /// Hub → window notification: one target's whole inbox changed ([`super::TargetInbox`]).
+    pub const INBOX_CHANGED: &str = "hub/inbox/changed";
     /// Window → hub. The pending cards actually visible in this focused window.
     pub const NOTIFICATIONS_VISIBLE: &str = "hub/notifications/visible";
     /// Hub → window. Open a notification at its exact request.
@@ -1056,3 +1061,56 @@ pub struct BrowserCallParams {
 
 /// The window’s reply passes through the hub.
 pub type BrowserCallResult = crate::BrowserCallResult;
+
+// ── Target inboxes and integrator channels (docs/16-external-dialogs.md, P418) ──────────────
+
+/// The thread id a [`RequestLocation`] carries for a request in a target's inbox (a dialog an
+/// integrator opened without a thread). Only the hub and its windows use it, for the reminder,
+/// the feed and the visible-cards report; it is never sent to a target, which answers inbox
+/// requests through `inbox/respond`. No thread id a harness makes starts with `~`.
+pub const INBOX_THREAD: &str = "~inbox";
+
+impl RequestLocation {
+    /// The location of a request in `target`'s inbox.
+    pub fn inbox(target: TargetId, request_id: crate::RequestId) -> Self {
+        Self { target, thread_id: crate::ThreadId::new(INBOX_THREAD), request_id }
+    }
+
+    /// Whether this is a request in a target's inbox rather than in a thread.
+    pub fn is_inbox(&self) -> bool {
+        self.thread_id.as_str() == INBOX_THREAD
+    }
+}
+
+/// One integrator channel of a target, as the hub last heard of it (`channel/registered`,
+/// `channel/closed`, `inbox/list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubChannel {
+    pub channel_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The integrator is still connected to its `yaacd`.
+    pub connected: bool,
+}
+
+/// One target's inbox as the hub holds it: the open dialogs raised without a thread, and the
+/// target's channels. Kept in the hub's memory only, never in the cache file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetInbox {
+    pub target: TargetId,
+    /// Open requests, oldest first. Terminal ones are dropped.
+    #[serde(default)]
+    pub requests: Vec<crate::RequestItem>,
+    #[serde(default)]
+    pub channels: Vec<HubChannel>,
+}
+
+/// `hub/inbox/list`'s answer: every target's inbox.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxListResult {
+    pub targets: Vec<TargetInbox>,
+}

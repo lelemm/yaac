@@ -248,6 +248,11 @@ pub(crate) struct UiState {
     /// Settings → Terminal and the terminal panel's height (P338, P339).
     pub terminal: yaac_core::prefs::TerminalPrefs,
     pub questions: HashMap<(ThreadKey, RequestId), QuestionDraft>,
+    /// What the user entered in each open external dialog (P418): target, thread (or
+    /// [`yaac_protocol::attach::INBOX_THREAD`]), request. Secret values live only here.
+    pub dialog_drafts: HashMap<(TargetId, yaac_protocol::ThreadId, RequestId), yaac_core::dialogs::DialogDraft>,
+    /// The inbox dialog shown over the shell (opened from Needs you or a notification).
+    pub inbox_dialog: Option<(TargetId, RequestId)>,
     pub budgets: HashMap<(ThreadKey, RequestId), BudgetFields>,
     pub dismissed: BTreeSet<TargetId>,
     pub focus_search: bool,
@@ -412,6 +417,8 @@ impl UiState {
             tray_on_close: true,
             terminal: yaac_core::prefs::TerminalPrefs::default(),
             questions: HashMap::new(),
+            dialog_drafts: HashMap::new(),
+            inbox_dialog: None,
             budgets: HashMap::new(),
             dismissed: BTreeSet::new(),
             focus_search: false,
@@ -555,6 +562,12 @@ pub(crate) enum Action {
     TypeHere,
     OpenAt(ThreadKey, Option<ItemId>),
     OpenRequest(ThreadKey),
+    /// Show a dialog of a target's inbox (P418).
+    OpenInboxDialog(TargetId, RequestId),
+    /// Answer or dismiss a dialog of a target's inbox.
+    RespondInbox { target: TargetId, request: RequestId, answer: yaac_protocol::DialogAnswer },
+    /// Ask a target what became of an inbox dialog whose answer may not have arrived.
+    CheckInbox(TargetId),
     Respond { viewing: ThreadKey, key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
     Send(ThreadKey),
     /// Send now while a turn runs: steered or interrupting (D166).
@@ -1465,8 +1478,15 @@ impl YaacApp {
                 }
                 Action::Respond { viewing, key, request, response, summary } => {
                     self.client.respond_from(&viewing, &key, &request, &response, summary);
+                    self.ui.dialog_drafts.remove(&(key.target.clone(), key.thread.clone(), request.clone()));
                     self.ui.questions.remove(&(key, request));
                 }
+                Action::OpenInboxDialog(target, request) => self.ui.inbox_dialog = Some((target, request)),
+                Action::RespondInbox { target, request, answer } => {
+                    self.client.respond_inbox(&target, &request, answer);
+                    self.ui.dialog_drafts.remove(&(target, yaac_protocol::ThreadId::new(yaac_protocol::attach::INBOX_THREAD), request));
+                }
+                Action::CheckInbox(target) => self.client.check_inbox(&target),
                 Action::Send(k) => self.send_composer_message(&k, false),
                 Action::SendNow(k) => self.send_composer_message(&k, true),
                 Action::QueueEdit(k, q) => {
@@ -1569,8 +1589,10 @@ impl YaacApp {
                 Action::NeedsNext => {
                     let map = yaac_core::attention::AttentionMap::compute(&self.client.state);
                     let list = yaac_core::sidebar::needs_you(&self.client.state, &map, self.now());
-                    if let Some(k) = self.ui.needs_cycle.next(&list) {
-                        self.apply(vec![Action::OpenRequest(k)]);
+                    match self.ui.needs_cycle.next_entry(&list) {
+                        Some(e) if e.dialog.is_some() => self.apply(vec![Action::OpenInboxDialog(e.key.target, e.dialog.unwrap_or_default())]),
+                        Some(e) => self.apply(vec![Action::OpenRequest(e.key)]),
+                        None => {}
                     }
                 }
                 Action::Dismiss(k, d) => self.client.set_dismissed(&k, d),
@@ -2389,6 +2411,10 @@ impl YaacApp {
         if let Some(open) = self.client.notification_open.pop_front() {
             if !self.client.notification_open.is_empty() { ctx.request_repaint(); }
             let (loc, item) = (open.location, open.item_id);
+            if loc.is_inbox() {
+                // A dialog without a thread: shown over the shell (P418).
+                self.ui.inbox_dialog = Some((loc.target, loc.request_id));
+            } else {
             let worker = ThreadKey::new(loc.target, loc.thread_id);
             let copy = self.client.state.selected_thread().and_then(|ancestor| {
                 yaac_core::copies::copies(&self.client.state, ancestor).into_iter()
@@ -2407,6 +2433,7 @@ impl YaacApp {
             self.ui.scroll_to = Some(focus.clone());
             self.ui.focus_card = Some(focus);
             if !self.browsers.chat_visible(&key) { self.browsers.select_chat(&key); }
+            }
             self.shell.hidden = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));

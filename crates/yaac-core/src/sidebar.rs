@@ -269,6 +269,10 @@ pub struct NeedsYouEntry {
     pub target_name: String,
     /// Muted (still listed: a blocked thread is never hidden).
     pub muted: bool,
+    /// A dialog of the target's inbox (P418), not a thread: `key.thread` is
+    /// [`yaac_protocol::attach::INBOX_THREAD`] and this names the request. Opening the entry
+    /// opens the dialog.
+    pub dialog: Option<yaac_protocol::RequestId>,
 }
 
 fn updated(state: &AppState, key: &ThreadKey) -> i64 {
@@ -290,11 +294,27 @@ pub fn needs_you(state: &AppState, map: &AttentionMap, now: i64) -> Vec<NeedsYou
                 attention: *a,
                 target_name: state.target_name(&key.target),
                 muted: state.is_muted(key, now),
+                dialog: None,
             })
         })
         .collect();
     out.sort_by(|a, b| updated(state, &b.key).cmp(&updated(state, &a.key)).then_with(|| a.title.cmp(&b.title)));
-    out
+    // A target's inbox dialogs (P418) come first, under their target: no thread holds them, so
+    // nothing else would show them.
+    let inbox: Vec<NeedsYouEntry> = state
+        .inbox
+        .needing_you()
+        .into_iter()
+        .map(|e| NeedsYouEntry {
+            key: ThreadKey::new(e.target.clone(), yaac_protocol::ThreadId::new(yaac_protocol::attach::INBOX_THREAD)),
+            title: e.dialog.title.clone(),
+            attention: Attention::Request(crate::hints::RequestKindWord::Dialog),
+            target_name: state.target_name(e.target),
+            muted: false,
+            dialog: Some(e.request.request_id),
+        })
+        .collect();
+    inbox.into_iter().chain(out).collect()
 }
 
 fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, bool, bool) {
@@ -631,21 +651,30 @@ impl Steady {
 /// cycle; with none left the button is not drawn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NeedsCycle {
-    last: Option<ThreadKey>,
+    last: Option<(ThreadKey, Option<yaac_protocol::RequestId>)>,
 }
 
 impl NeedsCycle {
     /// The thread to open now, given the threads that need the user (as [`needs_you`] lists
     /// them); `None` when there are none.
     pub fn next(&mut self, waiting: &[NeedsYouEntry]) -> Option<ThreadKey> {
+        self.next_entry(waiting).map(|e| e.key)
+    }
+
+    /// The entry to open now: a thread, or an inbox dialog ([`NeedsYouEntry::dialog`]).
+    pub fn next_entry(&mut self, waiting: &[NeedsYouEntry]) -> Option<NeedsYouEntry> {
         if waiting.is_empty() {
             self.last = None;
             return None;
         }
-        let at = self.last.as_ref().and_then(|l| waiting.iter().position(|e| &e.key == l)).map_or(0, |i| (i + 1) % waiting.len());
-        let key = waiting[at].key.clone();
-        self.last = Some(key.clone());
-        Some(key)
+        let at = self
+            .last
+            .as_ref()
+            .and_then(|(k, d)| waiting.iter().position(|e| &e.key == k && &e.dialog == d))
+            .map_or(0, |i| (i + 1) % waiting.len());
+        let entry = waiting[at].clone();
+        self.last = Some((entry.key.clone(), entry.dialog.clone()));
+        Some(entry)
     }
 
     /// The button's tooltip: "Next thread that needs you (N)".

@@ -28,6 +28,7 @@ export interface FrozenCoreHost {
   /** Native PTY probe result, absent on hosts without a terminal backend. */
   terminalSupport?(): { unavailableReason?: string };
   hubHostSupported?(): boolean;
+  channelsSupported?(): boolean;
   daemonInfo(): DaemonInfo;
   targetFacts(): TargetFacts;
   busy(): DaemonBusy;
@@ -352,6 +353,7 @@ export class ServerConnection implements ConnectionView {
     if (terminal && !terminal.unavailableReason) capabilities.push("terminal");
     capabilities.push("budgetTimeLimit", "transcription", "voiceCall", "voiceCallLanguage");
     if (this.host.hubHostSupported?.()) capabilities.push("hubHost");
+    if (this.host.channelsSupported?.()) capabilities.push("channels");
     const result = {
       protocol: negotiated.answer(),
       ...(p.messageChunks === true ? { messageChunks: true } : {}),

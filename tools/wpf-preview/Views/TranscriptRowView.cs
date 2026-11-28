@@ -29,6 +29,8 @@ public sealed class TranscriptRowView : UserControl
     private readonly StackPanel detailContent = new();
     private readonly StackPanel questions = new();
     private readonly WrapPanel fields = new();
+    private readonly StackPanel dialogHost = new();
+    private DialogLayoutView? dialog;
     private readonly List<TranscriptPart> parts = new();
     private readonly Dictionary<string, Button> buttons = new();
     private TranscriptRow? row;
@@ -149,6 +151,7 @@ public sealed class TranscriptRowView : UserControl
             content.Children.Add(details);
         content.Children.Add(attachments);
         content.Children.Add(questions);
+        content.Children.Add(dialogHost);
         content.Children.Add(fields);
         content.Children.Add(status);
         content.Children.Add(actions);
@@ -184,6 +187,8 @@ public sealed class TranscriptRowView : UserControl
         buttons.Clear();
         attachments.Children.Clear();
         questions.Children.Clear();
+        dialogHost.Children.Clear();
+        dialog = null;
         fields.Children.Clear();
         actions.Children.Clear();
         body = null;
@@ -207,7 +212,7 @@ public sealed class TranscriptRowView : UserControl
             return;
         }
         var user = kind == "user";
-        card = kind is "artifact" or "request" or "approval" or "permission" or "question" or "form" or "budget";
+        card = kind is "artifact" or "request" or "approval" or "permission" or "question" or "form" or "budget" or "dialog";
         var activity = kind is "activity" or "tool" or "file" or "call" or "notice" or "worked" or "changes";
         var tone = TranscriptColors.Tone(data.Value("tone").Text(), activity ? TranscriptColors.Muted : TranscriptColors.Text);
 
@@ -260,6 +265,7 @@ public sealed class TranscriptRowView : UserControl
             UpdateQuestions(data.Value("questions"));
         if (!Same("fields", data))
             UpdateFields(data.Value("fields"));
+        UpdateDialog(data.Value("dialog"));
         if (!Same("actions", data))
             UpdateActions(data.Value("actions"));
         previous = data;
@@ -663,6 +669,38 @@ public sealed class TranscriptRowView : UserControl
         }
         questions.Visibility = questions.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         RestoreFocus(questions, focus);
+    }
+
+    // An external dialog (P418): the source line, a gone integrator, then the layout built at
+    // runtime. Its buttons send `dialog:<id>` with the values entered.
+    private void UpdateDialog(JsonElement data)
+    {
+        if (state is null || data.ValueKind != JsonValueKind.Object)
+        {
+            dialogHost.Children.Clear();
+            dialog = null;
+            dialogHost.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (dialog is null)
+        {
+            var bound = row;
+            dialogHost.Children.Clear();
+            dialogHost.Children.Add(Label(color: TranscriptColors.Muted));
+            dialogHost.Children.Add(Label(color: TranscriptColors.Warning));
+            dialog = new DialogLayoutView(state.Dialog);
+            dialog.Pressed += button =>
+            {
+                if (row is null || !ReferenceEquals(bound, row) || dialog is null)
+                    return;
+                row.Send(new { id = row.ActionId, action = $"dialog:{button}", threadId = row.ThreadId, values = dialog.Values });
+            };
+            dialogHost.Children.Add(dialog);
+        }
+        SetLabel((TextBlock)dialogHost.Children[0], data.Value("source").Text(), TranscriptColors.Muted);
+        SetLabel((TextBlock)dialogHost.Children[1], data.Value("gone").Text(), TranscriptColors.Warning);
+        dialog.Render(data);
+        dialogHost.Visibility = Visibility.Visible;
     }
 
     private void UpdateFields(JsonElement data)

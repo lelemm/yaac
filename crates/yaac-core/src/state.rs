@@ -470,6 +470,8 @@ pub struct AppState {
     pub targets: Vec<TargetRecord>,
     /// The thread index across targets.
     pub threads: BTreeMap<ThreadKey, ThreadRecord>,
+    /// Every target's dialog inbox and this window's answers to it (P418).
+    pub inbox: crate::dialogs::Inboxes,
     /// Hints per thread.
     pub hints: BTreeMap<ThreadKey, Hints>,
     /// Transcripts held in memory: the open thread plus a small least-recently-used set.

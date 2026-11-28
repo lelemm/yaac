@@ -31,6 +31,7 @@ pub mod copies;
 pub mod components;
 pub mod controls;
 pub mod demo;
+pub mod dialogs;
 pub mod diff;
 pub mod display;
 pub mod first_run;
