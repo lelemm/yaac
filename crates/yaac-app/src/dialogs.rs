@@ -133,7 +133,7 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
 }
 
 /// The filled button in the failed colour.
-fn danger(ui: &mut egui::Ui, p: &Palette, label: &str) -> egui::Response {
+pub(crate) fn danger(ui: &mut egui::Ui, p: &Palette, label: &str) -> egui::Response {
     let font = theme::bold(size::UI);
     let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.on_primary));
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 24.0, 28.0), egui::Sense::click());

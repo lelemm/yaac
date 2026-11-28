@@ -183,6 +183,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::update_now(ui.ctx(), app, actions);
     crate::dialogs::bulk_archive(ui.ctx(), app, actions);
     crate::dialogs::move_dialog(ui.ctx(), app, actions);
+    crate::dialog_ui::inbox_modal(ui.ctx(), app, actions);
     if app.ui.settings || !ui.input(|i| i.focused) || ui.input(|i| i.viewport().minimized == Some(true)) {
         app.ui.visible_requests.clear();
     }

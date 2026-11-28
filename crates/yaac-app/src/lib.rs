@@ -45,6 +45,7 @@ mod file_pane_ui;
 mod cards;
 mod commander;
 mod composer;
+mod dialog_ui;
 mod dialogs;
 mod display;
 mod files;

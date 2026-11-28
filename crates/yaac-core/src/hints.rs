@@ -20,6 +20,8 @@ pub enum RequestKindWord {
     Form,
     /// Permission to work with other agents (a seam: see [`crate::permission`]).
     Permission,
+    /// A dialog an integrator app opened (docs/16-external-dialogs.md).
+    Dialog,
     /// A kind this build does not know.
     Other,
 }
@@ -32,6 +34,7 @@ impl RequestKindWord {
             RequestBody::MeshPermission(_) => Self::Permission,
             RequestBody::Question(_) => Self::Question,
             RequestBody::Form(_) => Self::Form,
+            RequestBody::Dialog(_) => Self::Dialog,
             RequestBody::Unknown(_) if crate::permission::parse(body).is_some() => Self::Permission,
             RequestBody::Unknown(_) => Self::Other,
         }
@@ -44,6 +47,7 @@ impl RequestKindWord {
             Self::Question => "question",
             Self::Form => "form",
             Self::Permission => "permission",
+            Self::Dialog => "dialog",
             Self::Other => "request",
         }
     }

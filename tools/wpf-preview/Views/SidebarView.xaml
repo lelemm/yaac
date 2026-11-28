@@ -293,6 +293,7 @@
     <Grid.RowDefinitions>
       <RowDefinition Height="42" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
@@ -372,7 +373,10 @@
     </Grid>
     </Border>
 
-    <Grid x:Name="ListHost" Grid.Row="2" Margin="0,0,-12,0" ClipToBounds="True" Background="Transparent"
+    <!-- External dialogs without a thread (P418): one row each, above every thread. -->
+    <StackPanel x:Name="InboxRows" Grid.Row="2" Visibility="Collapsed" Margin="0,0,0,6" />
+
+    <Grid x:Name="ListHost" Grid.Row="3" Margin="0,0,-12,0" ClipToBounds="True" Background="Transparent"
           AllowDrop="True" PreviewDragOver="OnDragOver" PreviewDrop="OnDrop" DragLeave="OnDragLeave"
           MouseLeave="OnListLeave" PreviewMouseLeftButtonDown="OnListDown"
           PreviewMouseLeftButtonUp="OnListUp" PreviewMouseMove="OnListMove"
@@ -404,7 +408,7 @@
       </Popup>
     </Grid>
 
-    <Border x:Name="SelectionBar" Grid.Row="3" Background="{DynamicResource YaacSelected}" CornerRadius="5"
+    <Border x:Name="SelectionBar" Grid.Row="4" Background="{DynamicResource YaacSelected}" CornerRadius="5"
             Margin="0,4,0,0" Padding="5,3" Visibility="Collapsed">
       <DockPanel>
         <Button x:Name="ClearSelection" DockPanel.Dock="Right" Content="×"
@@ -419,7 +423,7 @@
       </DockPanel>
     </Border>
 
-    <StackPanel x:Name="SidebarFooter" Grid.Row="4" Margin="0,5,0,0">
+    <StackPanel x:Name="SidebarFooter" Grid.Row="5" Margin="0,5,0,0">
       <local:UsageMeter x:Name="Usage" Margin="0,0,0,5" Visibility="Collapsed" />
       <Button x:Name="ScenesButton" Content="Demo: play the story" HorizontalAlignment="Left" />
       <DockPanel>

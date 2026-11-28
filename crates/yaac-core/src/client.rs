@@ -98,6 +98,12 @@ pub mod hub_names {
 /// What an outstanding request was for.
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
+    /// `hub/inbox/list` (P418).
+    Inboxes,
+    /// `inbox/respond`: an answer to an inbox dialog.
+    InboxRespond { target: TargetId, request_id: RequestId },
+    /// `inbox/list` asked of the target itself (Check latest status).
+    InboxCheck(TargetId),
     ModeChanged { key: ThreadKey, root: ThreadKey, batch: OpId },
     Hello,
     View,
@@ -212,6 +218,7 @@ enum Call {
 }
 
 mod forge;
+mod inbox;
 mod limits;
 mod queue;
 mod running_commands;
@@ -1058,6 +1065,7 @@ impl Client {
                 }
                 self.restore_drafts();
                 self.catalog_list();
+                self.load_inboxes();
                 self.load_rate_limits();
                 self.load_ssh_records();
                 let ids: Vec<(TargetId, bool)> =
@@ -1289,6 +1297,9 @@ impl Client {
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
+            Call::Inboxes => self.on_inboxes(result),
+            Call::InboxRespond { .. } => {}
+            Call::InboxCheck(target) => self.on_inbox_check(&target, result),
             Call::TurnStart { key, draft, op } => {
                 self.echo_answered(&key, &op, &result);
                 self.sent(&DraftRef::Thread(key), &draft);
@@ -1855,6 +1866,8 @@ impl Client {
             Call::Troubleshoot(id) => self.troubleshoot_reply = Some((id, Err(error.message.clone()))),
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::WslDistros => self.on_wsl_distros_error(error),
+            Call::Inboxes | Call::InboxCheck(_) => {}
+            Call::InboxRespond { target, request_id } => self.on_inbox_respond_error(&target, &request_id, &error),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),
             Call::Find { query } => {
                 if let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) {
@@ -1889,6 +1902,7 @@ impl Client {
                 if let Ok(settings) = serde_json::from_value(params) { self.state.hub.notifications = settings; }
             }
             "hub/tailscale/status" => self.state.hub.tailscale_status = crate::state::tailscale_status_line(&params),
+            attach::names::INBOX_CHANGED => self.on_inbox_changed(params),
             attach::names::NOTIFICATIONS_REQUESTS => {
                 if let Ok(feed) = serde_json::from_value(params) {
                     self.state.hub.request_feed = Some(feed);

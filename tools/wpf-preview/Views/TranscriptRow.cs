@@ -69,6 +69,8 @@ internal sealed class TranscriptRowState
     public Dictionary<string, bool> Expanded { get; } = new();
     public Dictionary<string, TranscriptAnswerDraft> Answers { get; } = new();
     public Dictionary<string, string> Fields { get; } = new();
+    /// <summary>An external dialog's entered values, by input id (P418); in memory only.</summary>
+    public Dictionary<string, object?> Dialog { get; } = new();
     public Dictionary<string, (int Start, int Length)> Selection { get; } = new();
 }
 

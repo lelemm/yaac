@@ -209,7 +209,8 @@ class MainActivity : ComponentActivity() {
         if (request != null && requestThread != null) {
             intent.removeExtra(n.EXTRA_REQUEST)
             ctl.send("shell.requestOpen", mapOf("threadId" to requestThread, "requestId" to request))
-            openRequest.value = requestThread
+            // A dialog without a thread (P418) opens as a sheet over the app, not a thread.
+            if (!dev.yaac.android.core.DialogValues.isInbox(requestThread)) openRequest.value = requestThread
             return
         }
         val id = intent?.getStringExtra(dev.yaac.android.notify.Notifier.EXTRA_OPEN) ?: return
@@ -376,6 +377,7 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
         viewer?.let { v -> dev.yaac.android.ui.ImageViewer(v) { viewer = null; send("image.close", null) } }
         side.pasteConfirm?.let { p -> dev.yaac.android.ui.PasteConfirm(p, send) { side.pasteConfirm = null } }
         shell["dialog"].obj()?.takeIf { it["id"].text != null }?.let { ShellDialog(it, navigate) }
+        shell["inboxDialog"].obj()?.let { dev.yaac.android.ui.InboxDialogSheet(it, send) }
     }
 }
 

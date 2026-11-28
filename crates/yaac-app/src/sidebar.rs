@@ -179,6 +179,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             return;
         }
     }
+    inbox_rows(ui, app, actions);
     let fresh = window_sections(app, map, now);
     // Rows do not jump under the pointer (D116): while it is over the list, or a row's menu
     // is open, a reorder waits until it leaves.
@@ -509,6 +510,35 @@ fn selection_bar(ui: &mut egui::Ui, app: &mut YaacApp, height: f32, actions: &mu
     if close.on_hover_text("Clear the selection (Esc)").clicked() {
         actions.push(Action::ClearSelection);
     }
+}
+
+/// The dialogs of target inboxes (P418), above every thread: no thread holds them. One row
+/// each — the needs-you mark, the title, "deployer · devbox" — that opens the dialog.
+fn inbox_rows(ui: &mut egui::Ui, app: &YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let state = &app.client.state;
+    let entries = state.inbox.needing_you();
+    if entries.is_empty() {
+        return;
+    }
+    for e in entries {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+        if resp.hovered() || resp.has_focus() {
+            ui.painter().rect_filled(rect, 5.0, p.faint);
+        }
+        icons::exclaim(ui.painter(), pos2(rect.left() + 12.0, rect.top() + 13.0), 14.0, p.failed);
+        let x = rect.left() + 26.0;
+        let w = rect.right() - x - 6.0;
+        let title = widgets::elided(ui, &e.dialog.title, &theme::ui(size::UI), p.text, w);
+        ui.painter().galley(pos2(x, rect.top() + 4.0), title, p.text);
+        let line = format!("{} · {}", e.dialog.source.name, state.target_name(e.target));
+        let sub = widgets::elided(ui, &line, &theme::ui(size::SMALL), p.text2, w);
+        ui.painter().galley(pos2(x, rect.top() + 22.0), sub, p.text2);
+        if resp.on_hover_text(yaac_core::dialogs::source_line(e.dialog, &state.target_name(e.target))).clicked() {
+            actions.push(Action::OpenInboxDialog(e.target.clone(), e.request.request_id.clone()));
+        }
+    }
+    ui.add_space(6.0);
 }
 
 /// The Needs-you button (D117): the red exclamation beside the history buttons, with the

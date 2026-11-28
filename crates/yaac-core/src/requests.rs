@@ -173,6 +173,7 @@ pub fn answer_summary(body: &RequestBody, answer: &RequestResponse) -> String {
             }
             parts.join(" · ")
         }
+        (RequestBody::Dialog(d), RequestResponse::Dialog(ans)) => crate::dialogs::summary(d, ans),
         (_, RequestResponse::Unknown(_)) if crate::permission::summary(answer).is_some() => {
             crate::permission::summary(answer).unwrap_or_default()
         }
