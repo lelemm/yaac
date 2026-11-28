@@ -20,12 +20,14 @@ import { connectDaemonSocket } from "./server.js";
 import { UPLOAD_MAX_CONCURRENT, UPLOAD_WINDOW } from "./uploads.js";
 import {
   HUB_BINARY, HUB_CONFIG, hubPaths, prepareParent, promoteHubFiles, StagedFile, validateTransferFile, validateTransferId,
+  type HubProfilePaths,
 } from "./hub-host-files.js";
 
 const PORT = 47380;
 const WSL_INTEROP_MARKER = "/proc/sys/fs/binfmt_misc/WSLInterop";
 const BINARY_DOWNLOAD_MS = 5 * 60_000;
 const WAIT_FOR_PUT_MS = 30_000;
+const WINDOWS_TAILSCALE = "C:\\Program Files\\Tailscale\\tailscale.exe";
 
 export interface HubHostOptions {
   /** Allow a fixture server to deliver a hub binary over HTTP. */
@@ -34,11 +36,21 @@ export interface HubHostOptions {
   probePortForTests?: number;
   /** Make WSL detection independent of the machine running the tests. */
   wslInteropPathForTests?: string;
+  /** Exercise the Windows receiver with fixture executables on Linux. */
+  platformForTests?: "linux" | "win32";
+}
+
+interface WindowsHubInfo {
+  exe: string;
+  build: string;
+  running: boolean;
+  paths: HubProfilePaths;
 }
 
 interface Transfer {
   id: string;
   root: string;
+  paths: HubProfilePaths;
   owner: ConnectionView;
   state: "staging" | "validating" | "armed" | "launching";
   startHub: boolean;
@@ -81,7 +93,10 @@ function unitValue(value: string): string {
 }
 
 export class HubHost {
-  private readonly paths: ReturnType<typeof hubPaths>;
+  private readonly platform: NodeJS.Platform;
+  private readonly linuxPaths?: ReturnType<typeof hubPaths>;
+  private readingWindowsHub?: Promise<WindowsHubInfo | undefined>;
+  private readonly closedOwners = new WeakSet<ConnectionView>();
   private readonly transfers = new Map<string, Transfer>();
   private readonly streams = new Map<number, { transfer: Transfer; pending: PendingFile; remainingCredit: number }>();
   private launchJob: Promise<void> | null = null;
@@ -92,7 +107,8 @@ export class HubHost {
     private readonly log: (line: string) => void,
     private readonly options: HubHostOptions = {},
   ) {
-    this.paths = hubPaths(env);
+    this.platform = options.platformForTests ?? process.platform;
+    if (this.platform !== "win32") this.linuxPaths = hubPaths(env);
   }
 
   get launching(): boolean { return this.launchJob !== null; }
@@ -102,20 +118,29 @@ export class HubHost {
   }
 
   async probe(): Promise<HubHostProbeResult> {
-    const [tailscale, hubRunning] = await Promise.all([this.tailscale(), this.hubRunning()]);
+    const [tailscale, hubInfo, linuxRunning] = await Promise.all([
+      this.tailscale(),
+      this.platform === "win32" ? this.windowsHubInfo() : undefined,
+      this.linuxPaths ? this.linuxHubRunning(this.linuxPaths) : false,
+    ]);
     const port = this.options.probePortForTests ?? PORT;
     const portFree = tailscale.ips.length > 0 && (await Promise.all(tailscale.ips.map((ip) => canBind(ip, port)))).every(Boolean);
     const interop = this.options.wslInteropPathForTests ?? WSL_INTEROP_MARKER;
-    const distro = this.env.WSL_DISTRO_NAME?.trim() || (fs.existsSync(interop) ? "WSL" : undefined);
-    const lastTransfer = this.lastTransfer();
+    const distro = this.linuxPaths && (this.env.WSL_DISTRO_NAME?.trim() || (fs.existsSync(interop) ? "WSL" : undefined));
+    const paths = hubInfo?.paths ?? this.linuxPaths;
+    const lastTransfer = paths && this.lastTransfer(paths);
     return {
-      os: process.platform, arch: os.machine(), tailscale, portFree, hubRunning,
+      os: this.platform, arch: os.machine(), tailscale, portFree, hubRunning: hubInfo?.running ?? linuxRunning,
+      ...(hubInfo && { hubBuild: hubInfo.build }),
       ...(distro && { wsl: { distro } }), ...(lastTransfer && { lastTransfer }),
     };
   }
 
   private async tailscale(): Promise<HubHostTailscale> {
-    const result = await run("tailscale", ["status", "--json"], { env: this.env, timeoutMs: 4000 });
+    const args = ["status", "--json"];
+    const options = { env: this.env, timeoutMs: 4000 };
+    let result = await run("tailscale", args, options);
+    if (result.code !== 0 && this.platform === "win32") result = await run(WINDOWS_TAILSCALE, args, options);
     if (result.code !== 0) return { running: false, ips: [] };
     try {
       // Tailscale uses uint64 user IDs as User map keys. Preserve the raw decimal digits.
@@ -134,8 +159,28 @@ export class HubHost {
     }
   }
 
-  private async hubRunning(): Promise<boolean> {
-    const lock = path.join(this.paths.runtime, "hub.lock");
+  /** Share concurrent lookups without caching the running state or the installed build. */
+  private windowsHubInfo(): Promise<WindowsHubInfo | undefined> {
+    return this.readingWindowsHub ??= this.readWindowsHubInfo().finally(() => { this.readingWindowsHub = undefined; });
+  }
+
+  private async readWindowsHubInfo(): Promise<WindowsHubInfo | undefined> {
+    const exe = this.env.YAAC_EXE;
+    if (!exe) return undefined;
+    const result = await run(exe, ["hub-info"], { env: this.env, timeoutMs: 4000 });
+    if (result.code !== 0) return undefined;
+    try {
+      const { build, configDir, dataDir, runtimeDir, running } = JSON.parse(result.stdout);
+      if (typeof build !== "string" || !build.trim() || typeof running !== "boolean") return undefined;
+      if (![configDir, dataDir, runtimeDir].every((dir) => typeof dir === "string" && dir.length > 0)) return undefined;
+      return { exe, build, running, paths: { config: path.resolve(configDir), data: path.resolve(dataDir), runtime: path.resolve(runtimeDir) } };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async linuxHubRunning(paths: HubProfilePaths): Promise<boolean> {
+    const lock = path.join(paths.runtime, "hub.lock");
     if (fs.lstatSync(lock, { throwIfNoEntry: false })?.isFile()) {
       // The lock file outlives the hub. Check the OS lock and only use the pid as a fallback.
       const result = await run("flock", ["-n", "-E", "42", lock, "true"], { env: this.env, timeoutMs: 1000 });
@@ -150,19 +195,19 @@ export class HubHost {
         } catch { /* stale lock */ }
       }
     }
-    const socket = path.join(this.paths.runtime, "hub.sock");
+    const socket = path.join(paths.runtime, "hub.sock");
     if (!fs.lstatSync(socket, { throwIfNoEntry: false })?.isSocket()) return false;
     const connection = await connectDaemonSocket(socket, 500);
     connection?.destroy();
     return connection !== null;
   }
 
-  private lastTransfer(): HubHostLastTransfer | undefined {
+  private lastTransfer(paths: HubProfilePaths): HubHostLastTransfer | undefined {
     const candidates: Array<{ file: string; time: number }> = [];
     try {
-      for (const entry of fs.readdirSync(this.paths.data, { withFileTypes: true })) {
+      for (const entry of fs.readdirSync(paths.data, { withFileTypes: true })) {
         if (!entry.isFile() || !/^transfer-[A-Za-z0-9_-]+\.result$/.test(entry.name)) continue;
-        const file = path.join(this.paths.data, entry.name);
+        const file = path.join(paths.data, entry.name);
         const stat = fs.statSync(file, { throwIfNoEntry: false });
         if (stat) candidates.push({ file, time: stat.mtimeMs });
       }
@@ -173,12 +218,12 @@ export class HubHost {
     return candidates.length ? readJson<HubHostLastTransfer>(candidates[0]!.file) : undefined;
   }
 
-  private resultPath(opId: string): string {
-    return path.join(this.paths.data, `transfer-${opId}.result`);
+  private resultPath(paths: HubProfilePaths, opId: string): string {
+    return path.join(paths.data, `transfer-${opId}.result`);
   }
 
-  private staging(owner: ConnectionView, opId: string): Transfer {
-    validateTransferId(opId);
+  private staging(owner: ConnectionView, opId: string, paths: HubProfilePaths): Transfer {
+    if (this.closedOwners.has(owner)) throw new RpcError("hub_transfer_failed", "the transfer connection closed");
     const existing = this.transfers.get(opId);
     if (existing) {
       if (existing.owner !== owner || existing.state !== "staging") {
@@ -186,9 +231,9 @@ export class HubHost {
       }
       return existing;
     }
-    if (fs.existsSync(this.resultPath(opId))) throw new RpcError("hub_transfer_busy", "the hub transfer already finished");
-    const root = path.join(this.paths.data, `transfer-${opId}`);
-    prepareParent(this.paths.data, root);
+    if (fs.existsSync(this.resultPath(paths, opId))) throw new RpcError("hub_transfer_busy", "the hub transfer already finished");
+    const root = path.join(paths.data, `transfer-${opId}`);
+    prepareParent(paths.data, root);
     try {
       fs.mkdirSync(root, { mode: 0o700 });
     } catch (error) {
@@ -197,7 +242,7 @@ export class HubHost {
       }
       throw error;
     }
-    const transfer: Transfer = { id: opId, root, owner, state: "staging", startHub: true, pending: new Map(), files: new Set(), errors: new Map() };
+    const transfer: Transfer = { id: opId, root, paths, owner, state: "staging", startHub: true, pending: new Map(), files: new Set(), errors: new Map() };
     this.transfers.set(opId, transfer);
     return transfer;
   }
@@ -263,9 +308,11 @@ export class HubHost {
   }
 
   async install(owner: ConnectionView, { opId, url: raw, size, sha256 }: HubHostInstallParams): Promise<HubHostInstallResult> {
+    if (!this.linuxPaths) throw new RpcError("hub_transfer_failed", "Windows transfers use the installed YAAC executable");
     validateTransferFile(HUB_BINARY, size, sha256);
     const url = this.downloadUrl(raw);
-    const transfer = this.staging(owner, opId);
+    validateTransferId(opId);
+    const transfer = this.staging(owner, opId, this.linuxPaths);
     const pending = this.begin(transfer, HUB_BINARY, size, sha256);
     const notify = (done: number) => {
       const progress: HubHostProgressParams = { opId, done, total: size };
@@ -301,9 +348,18 @@ export class HubHost {
     }
   }
 
-  put(owner: ConnectionView, { opId, name, size, sha256 }: HubHostPutParams): HubHostPutResult {
+  async put(owner: ConnectionView, { opId, name, size, sha256 }: HubHostPutParams): Promise<HubHostPutResult> {
     validateTransferFile(name, size, sha256);
-    const transfer = this.staging(owner, opId);
+    validateTransferId(opId);
+    if (this.platform === "win32") {
+      if (name === HUB_BINARY) throw new RpcError("hub_transfer_failed", "Windows transfers use the installed YAAC executable");
+      if (name.split("/").some((part) => /\.$|^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\.|$)/i.test(part))) {
+        throw new RpcError("invalid_params", "invalid Windows hub transfer file name");
+      }
+    }
+    const paths = this.transfers.get(opId)?.paths ?? this.linuxPaths ?? (await this.windowsHubInfo())?.paths;
+    if (!paths) throw new RpcError("hub_transfer_failed", "could not read hub-info from the installed Windows YAAC (YAAC_EXE)");
+    const transfer = this.staging(owner, opId, paths);
     const stream = this.allocateStream();
     const window = new ReceiveWindow(stream, Math.min(UPLOAD_WINDOW, size));
     const pending = this.begin(transfer, name, size, sha256, window);
@@ -360,8 +416,9 @@ export class HubHost {
       ]);
       if (this.transfers.get(opId) !== transfer) throw new RpcError("hub_transfer_failed", "the hub transfer was cancelled");
       for (const [name, error] of transfer.errors) throw new RpcError("hub_transfer_failed", `${name}: ${error}`);
-      if (![HUB_CONFIG, HUB_BINARY].every((name) => transfer.files.has(name) && fs.lstatSync(path.join(transfer.root, name), { throwIfNoEntry: false })?.isFile())) {
-        throw new RpcError("hub_transfer_failed", "hub binary and config are required before starting");
+      const required = this.linuxPaths ? [HUB_CONFIG, HUB_BINARY] : [HUB_CONFIG];
+      if (!required.every((name) => transfer.files.has(name) && fs.lstatSync(path.join(transfer.root, name), { throwIfNoEntry: false })?.isFile())) {
+        throw new RpcError("hub_transfer_failed", this.linuxPaths ? "hub binary and config are required before starting" : "hub config is required before starting");
       }
       if (this.launching || [...this.transfers.values()].some((candidate) => candidate.state === "armed")) {
         throw new RpcError("hub_transfer_busy", "a hub hand-over is already armed");
@@ -375,13 +432,15 @@ export class HubHost {
     }
   }
 
-  abort(owner: ConnectionView, { opId }: HubHostAbortParams): void {
+  async abort(owner: ConnectionView, { opId }: HubHostAbortParams): Promise<void> {
     validateTransferId(opId);
+    const paths = this.transfers.get(opId)?.paths ?? this.linuxPaths ?? (await this.windowsHubInfo())?.paths;
     const transfer = this.transfers.get(opId);
     if (!transfer) {
-      const root = path.join(this.paths.data, `transfer-${opId}`);
+      if (!paths) return;
+      const root = path.join(paths.data, `transfer-${opId}`);
       // Preserve backups if a previous daemon exited after promoting files.
-      if (!fs.existsSync(this.resultPath(opId)) && !fs.existsSync(path.join(root, "replaced"))) {
+      if (!fs.existsSync(this.resultPath(paths, opId)) && !fs.existsSync(path.join(root, "replaced"))) {
         fs.rmSync(root, { recursive: true, force: true });
       }
       return;
@@ -402,6 +461,7 @@ export class HubHost {
   }
 
   close(owner: ConnectionView, onLaunchDone: () => void): void {
+    this.closedOwners.add(owner);
     for (const transfer of this.transfers.values()) {
       if (transfer.owner !== owner) continue;
       if (transfer.state === "armed") {
@@ -420,60 +480,83 @@ export class HubHost {
   private async launch(transfer: Transfer): Promise<void> {
     const result: HubHostLastTransfer = { opId: transfer.id, status: transfer.startHub ? "started" : "placed" };
     try {
-      if (await this.hubRunning()) throw new Error("a hub is already running on the target");
-      const { paths } = this;
-      const bin = path.join(paths.data, HUB_BINARY);
-      const env: NodeJS.ProcessEnv = { ...this.env, HOME: paths.home, YAAC_CONFIG_DIR: paths.config, YAAC_DATA_DIR: paths.data, YAAC_RUNTIME_DIR: paths.runtime };
-      const options = { env, timeoutMs: 10_000 };
-      const systemd = transfer.startHub && (await run("systemctl", ["--user", "show-environment"], options)).code === 0;
-      const serviceName = "yaac-hub.service";
-      const logfile = path.join(paths.data, "hub.log");
-      const service = systemd ? {
-        file: path.join(paths.configHome, "systemd", "user", serviceName),
-        content: [
-          "[Unit]", "Description=YAAC hub", "[Service]", "Type=exec",
-          ...["HOME", "YAAC_CONFIG_DIR", "YAAC_DATA_DIR", "YAAC_RUNTIME_DIR", "YAAC_HOME", "PATH"].flatMap((key) =>
-            env[key] ? [`Environment=${unitValue(`${key}=${env[key]}`)}`] : []),
-          `ExecStart=:${unitValue(bin)} hub`,
-          "[Install]", "WantedBy=default.target", "",
-        ].join("\n"),
-      } : undefined;
-      promoteHubFiles(transfer.root, transfer.files, paths, service);
-      if (systemd) {
-        checkRun("systemctl --user enable --now", await run("systemctl", ["--user", "enable", "--now", serviceName], options));
-      } else if (transfer.startHub) {
-        const status = await run(bin, ["autostart", "status"], options);
-        if (status.code === 0 && /^(on|off)$/.test(status.stdout.trim())) {
-          const start = await run(bin, ["autostart", "sync", "--start"], options);
-          checkRun("yaac autostart sync --start", start);
-          // `sync --start` only starts a hub whose config enables start at login.
-          if (start.stdout.trim() === "off") await this.spawnHub(bin, logfile, env);
-        } else {
-          await this.spawnHub(bin, logfile, env);
-        }
-      }
+      if (this.linuxPaths) await this.launchLinux(transfer, this.linuxPaths);
+      else await this.launchWindows(transfer);
     } catch (error) {
       result.status = "failed";
       result.message = messageOf(error);
       this.log(`hub transfer ${transfer.id}: ${result.message}`);
     }
     try {
-      writeJsonAtomic(this.resultPath(transfer.id), result);
+      writeJsonAtomic(this.resultPath(transfer.paths, transfer.id), result);
     } catch (error) {
       this.log(`writing hub transfer result: ${messageOf(error)}`);
     }
   }
 
-  private async spawnHub(bin: string, logfile: string, env: NodeJS.ProcessEnv): Promise<void> {
-    const log = fs.openSync(logfile, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  private async launchWindows(transfer: Transfer): Promise<void> {
+    const info = await this.windowsHubInfo();
+    if (!info) throw new Error("could not read hub-info from the installed Windows YAAC (YAAC_EXE)");
+    if (info.running) throw new Error("a hub is already running on the target");
+    const { paths } = transfer;
+    if (info.paths.config !== paths.config || info.paths.data !== paths.data || info.paths.runtime !== paths.runtime) {
+      throw new Error("the Windows YAAC hub directories changed during transfer");
+    }
+    promoteHubFiles(transfer.root, transfer.files, paths, { windows: true });
+    if (!transfer.startHub) return;
+    const start = await run(info.exe, ["autostart", "sync", "--start"], { env: this.env, timeoutMs: 10_000 });
+    checkRun("yaac autostart sync --start", start);
+    if (start.stdout.trim() === "off") await this.spawnHub(info.exe, this.env);
+  }
+
+  private async launchLinux(transfer: Transfer, paths: ReturnType<typeof hubPaths>): Promise<void> {
+    if (await this.linuxHubRunning(paths)) throw new Error("a hub is already running on the target");
+    const bin = path.join(paths.data, HUB_BINARY);
+    const env: NodeJS.ProcessEnv = { ...this.env, HOME: paths.home, YAAC_CONFIG_DIR: paths.config, YAAC_DATA_DIR: paths.data, YAAC_RUNTIME_DIR: paths.runtime };
+    const options = { env, timeoutMs: 10_000 };
+    const systemd = transfer.startHub && (await run("systemctl", ["--user", "show-environment"], options)).code === 0;
+    const serviceName = "yaac-hub.service";
+    const logfile = path.join(paths.data, "hub.log");
+    const service = systemd ? {
+      autostart: paths.autostart,
+      file: path.join(paths.configHome, "systemd", "user", serviceName),
+      content: [
+        "[Unit]", "Description=YAAC hub", "[Service]", "Type=exec",
+        ...["HOME", "YAAC_CONFIG_DIR", "YAAC_DATA_DIR", "YAAC_RUNTIME_DIR", "YAAC_HOME", "PATH"].flatMap((key) =>
+          env[key] ? [`Environment=${unitValue(`${key}=${env[key]}`)}`] : []),
+        `ExecStart=:${unitValue(bin)} hub`,
+        "[Install]", "WantedBy=default.target", "",
+      ].join("\n"),
+    } : undefined;
+    promoteHubFiles(transfer.root, transfer.files, paths, { service });
+    if (systemd) {
+      checkRun("systemctl --user enable --now", await run("systemctl", ["--user", "enable", "--now", serviceName], options));
+    } else if (transfer.startHub) {
+      const status = await run(bin, ["autostart", "status"], options);
+      if (status.code === 0 && /^(on|off)$/.test(status.stdout.trim())) {
+        const start = await run(bin, ["autostart", "sync", "--start"], options);
+        checkRun("yaac autostart sync --start", start);
+        // `sync --start` only starts a hub whose config enables start at login.
+        if (start.stdout.trim() === "off") await this.spawnHub(bin, env, logfile);
+      } else {
+        await this.spawnHub(bin, env, logfile);
+      }
+    }
+  }
+
+  private async spawnHub(bin: string, env: NodeJS.ProcessEnv, logfile?: string): Promise<void> {
+    const log = logfile === undefined ? undefined :
+      fs.openSync(logfile, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(bin, ["hub"], { env, detached: true, stdio: ["ignore", log, log] });
+        const child = spawn(bin, ["hub"], {
+          env, detached: true, windowsHide: this.platform === "win32", stdio: log === undefined ? "ignore" : ["ignore", log, log],
+        });
         child.once("error", reject);
         child.once("spawn", () => { child.unref(); resolve(); });
       });
     } finally {
-      fs.closeSync(log);
+      if (log !== undefined) fs.closeSync(log);
     }
   }
 }

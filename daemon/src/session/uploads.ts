@@ -75,11 +75,11 @@ export function ensurePrivateDir(dir: string): void {
   }
   const st = fs.lstatSync(dir);
   if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} is not a directory yaacd can use`);
-  if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
-    throw new Error(`${dir} belongs to another user`);
+  if (typeof process.getuid === "function") {
+    if (st.uid !== process.getuid()) throw new Error(`${dir} belongs to another user`);
+    // Ours, not a link: make sure nobody else can read or plant files in it.
+    if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
   }
-  // Ours, not a link: make sure nobody else can read or plant files in it.
-  if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
 }
 
 export class UploadStore {
