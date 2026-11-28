@@ -67,6 +67,11 @@ conversation's `Thread.id`. If the integrator already has the YAAC thread ID, it
 daemon prefers a live thread, then the most recently updated one.
 [Claude Code hook input fields](https://code.claude.com/docs/en/hooks#common-input-fields).
 
+An integrator can also learn `yaacThreadId` from YAAC's own launch hook. Use `thread.yaacThreadId`
+for `thread.beforeFirstPrompt` or `child.yaacThreadId` for `worker.beforeFirstPrompt`.
+A dialog opened before the new thread is registered follows the usual inbox placement.
+[YAAC launch hook](10-agent-mesh.md#launch-hook).
+
 ## Runtime layout (P420)
 
 `layout` is a tree of objects, each with a `type`. The integrator defines the contents,

@@ -279,10 +279,10 @@ and reports their waiting state directly (D188). Older daemon summaries omit
 `reportsToParent`, so the window leaves the parent's mark as reported until it has a
 worker summary that confirms automatic result delivery.
 
-### Worker launch hook
+### Launch hook
 
-A target can configure one executable to run when it starts a mesh worker from a local
-parent. Put `worker-launch-hook.json` in that target's YAAC home, normally `~/.yaac`.
+A target can configure one executable to run when YAAC creates a thread (D187, extended by
+P421). Put `worker-launch-hook.json` in that target's YAAC home, normally `~/.yaac`.
 Use an absolute executable path and an optional argument list. YAAC runs it directly from
 the YAAC home with a limited OS environment.
 
@@ -293,8 +293,9 @@ the YAAC home with a limited OS environment.
 }
 ```
 
-YAAC sends one JSON object on stdin after the child's native ID is available and before its
-first prompt. The parent and child can use different provider kinds or instances.
+YAAC sends one JSON object on stdin after the native ID is available and before the first
+prompt. A mesh worker with a verified parent on the same target receives
+`worker.beforeFirstPrompt`. The parent and child can use different provider kinds or instances.
 
 ```json
 {
@@ -315,6 +316,23 @@ first prompt. The parent and child can use different provider kinds or instances
 }
 ```
 
+Every other new thread uses `thread.beforeFirstPrompt`. This covers UI starts, native
+forks, handoff forks, and mesh starts whose parent is on a different target. An idle native
+fork runs the hook during creation, before YAAC returns it for later use. Resumes, adopted
+sessions, and sub-agents started by a harness keep their existing paths.
+
+```json
+{
+  "event": "thread.beforeFirstPrompt",
+  "thread": {
+    "harness": "claude",
+    "instanceId": "work-claude",
+    "yaacThreadId": "t_new",
+    "nativeThreadId": "claude-session"
+  }
+}
+```
+
 The IDs are opaque strings. When `sessionId` is omitted, the provider verified that it
 equals `nativeThreadId`. The mesh supplies the parent identity from the verified caller.
 The event contains conversation identifiers only.
@@ -322,10 +340,11 @@ The event contains conversation identifiers only.
 Exit with status zero to allow the first prompt. A nonzero exit, failure to start, or a
 timeout blocks the launch. A failing hook can return `{"reason":"A short, public explanation"}`
 on stdout. YAAC never surfaces stderr or unstructured stdout. The process has a 15-second
-deadline and a 16 KiB output limit on each stream. User-initiated threads, native harness
-subagents, and spawns between targets use their existing launch paths.
-If Codex loses confirmation after the hook allows the first prompt, YAAC reports the
-worker's native thread ID and preserves the conversation so its status can be checked.
+deadline and a 16 KiB output limit on each stream. The configuration must be an ordinary
+file. On Unix it must belong to the target user, with write permission only for that user.
+If Codex loses confirmation after the
+hook allows the first prompt, YAAC reports the native thread ID and preserves the
+conversation so its status can be checked.
 
 ### The worker's permission mode
 

@@ -956,6 +956,7 @@ export class FakeProvider implements HarnessProvider {
     if (!this.options.nativeFork) throw new Error("fake: native fork is disabled");
     const src = this.thread(thread);
     const native = this.next("fk-");
+    if (opts.beforeFirstPrompt) await opts.beforeFirstPrompt(native, native);
     const now = nowIso();
     let items = src.items;
     const live = this.live.get(thread);

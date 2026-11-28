@@ -2232,6 +2232,14 @@ export class ClaudeProvider implements HarnessProvider {
       }
     }
     const res = await sdk.forkSession(thread, { ...(upToMessageId ? { upToMessageId } : {}) });
+    if (opts.beforeFirstPrompt) {
+      try {
+        await opts.beforeFirstPrompt(res.sessionId, res.sessionId);
+      } catch (error) {
+        await sdk.deleteSession(res.sessionId).catch(() => {});
+        throw error;
+      }
+    }
     // A native fork stays in the conversation's own project folder.
     this.settings[res.sessionId] = {
       cwd: src.cwd,

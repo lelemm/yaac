@@ -145,7 +145,7 @@ export interface StartThreadParams {
   model?: ModelId | null;
   effort?: EffortId | null;
   mode?: ModeId | null;
-  /** Once the native IDs are known, await this before sending any input to a mesh worker. */
+  /** Once the native IDs are known, await this before sending the first prompt. */
   beforeFirstPrompt?: (nativeThreadId: NativeId, sessionId: string) => Promise<void>;
   /**
    * Fast mode for this turn (D125), resolved by yaacd: `true` only when the model has
@@ -272,6 +272,8 @@ export interface ForkOptions extends TurnOverrides {
   /** Fork after this turn; the last completed turn when absent. */
   atTurn?: TurnId | null;
   cwd: string;
+  /** Await this once the fork has its own native identity, before making it available. */
+  beforeFirstPrompt?: StartThreadParams["beforeFirstPrompt"];
 }
 
 /** Whether something other than yaacd is driving (or has open) a conversation. */

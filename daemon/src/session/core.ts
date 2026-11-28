@@ -90,7 +90,7 @@ import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js
 import { ProjectStore, matchProject, projectRefFor, userProjectRef } from "./projects.js";
 import { FolderTrust } from "./trust.js";
 import { Limiter } from "../util/exec.js";
-import { loadWorkerLaunchHook, type WorkerLaunchIdentity } from "./worker-launch.js";
+import { loadLaunchHook, type LaunchIdentity } from "./worker-launch.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
 export const ITEM_READ_MAX = 512 * 1024;
@@ -2370,10 +2370,14 @@ export class Core {
       const key = instance.config.id;
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
+      let launchStoreKey: string | null | undefined;
       try {
-        started = await provider.startThread({ cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast }, input);
+        const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(instance, provider);
+        launchStoreKey = storeKey;
+        started = await provider.startThread({ cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast, beforeFirstPrompt }, input);
       } catch (e) {
         this.finishPendingStart(key);
+        if (launchStoreKey !== undefined && e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
       }
       const firstText = parts.find((x) => x.type === "text") as { text?: string } | undefined;
@@ -2392,6 +2396,7 @@ export class Core {
           ...(typeof p.agents === "string" ? { agents: p.agents } : {}),
         },
         true,
+        launchStoreKey,
       );
       const driver: Driver = { key: client.key, host: client.host };
       this.turnBegan(rt, started.turn, "user", parts, driver, undefined, p.opId);
@@ -3337,11 +3342,8 @@ export class Core {
     let advertisedModel: ModelId | null;
     let launchStoreKey: string | null | undefined;
     try {
-      launchStoreKey = instance.descriptor.store.key ?? null;
-      const beforeFirstPrompt = p.parent
-        ? await this.workerLaunchCallback(p.parent, instance, provider, launchStoreKey)
-        : undefined;
-      if (!beforeFirstPrompt) launchStoreKey = undefined;
+      const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(instance, provider, p.parent);
+      launchStoreKey = storeKey;
       const model = this.newThreadModel(instance, p.model);
       advertisedModel = model ?? instance.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
       started = await provider.startThread({
@@ -3378,31 +3380,41 @@ export class Core {
     return { threadId: rt.id, turnId: started.turn };
   }
 
-  private async workerLaunchCallback(
-    parent: ThreadRuntime, instance: Instance, provider: HarnessProvider, storeKey: string | null,
-  ): Promise<StartThreadParams["beforeFirstPrompt"]> {
-    const hook = loadWorkerLaunchHook(this.opts.home, this.opts.env);
-    if (!hook) return undefined;
-    const source = this.provider(parent);
-    if (!source.workerSessionId || !provider.workerSessionId) {
-      throw new Error("The configured worker launch hook needs session identities from both providers.");
+  private async firstPromptLaunch(
+    instance: Instance, provider: HarnessProvider, parent?: ThreadRuntime | null,
+  ): Promise<{ beforeFirstPrompt?: StartThreadParams["beforeFirstPrompt"]; storeKey?: string | null }> {
+    const hook = loadLaunchHook(this.opts.home, this.opts.env);
+    if (!hook) return {};
+    const storeKey = instance.descriptor.store.key ?? null;
+    let parentRef: LaunchIdentity | undefined;
+    if (parent) {
+      const source = this.provider(parent);
+      if (!source.workerSessionId || !provider.workerSessionId) {
+        throw new Error("The configured worker launch hook needs session identities from both providers.");
+      }
+      const sessionId = await source.workerSessionId(parent.record.native);
+      parentRef = {
+        harness: parent.record.kind, instanceId: parent.record.instance,
+        yaacThreadId: parent.id, nativeThreadId: parent.record.native,
+        ...(sessionId === parent.record.native ? {} : { sessionId }),
+      };
+    } else if (!provider.workerSessionId) {
+      throw new Error("The configured thread launch hook needs a session identity from the provider.");
     }
-    const parentSession = await source.workerSessionId(parent.record.native);
-    const sourceRef: WorkerLaunchIdentity = {
-      harness: parent.record.kind, instanceId: parent.record.instance,
-      yaacThreadId: parent.id, nativeThreadId: parent.record.native,
-      ...(parentSession === parent.record.native ? {} : { sessionId: parentSession }),
-    };
-    return (nativeThreadId, sessionId) => hook({
-      event: "worker.beforeFirstPrompt",
-      parent: sourceRef,
-      child: {
-        harness: instance.config.kind, instanceId: instance.config.id,
-        yaacThreadId: createdThreadId(threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId)),
-        nativeThreadId,
-        ...(sessionId === nativeThreadId ? {} : { sessionId }),
+    return {
+      storeKey,
+      beforeFirstPrompt: (nativeThreadId, sessionId) => {
+        const legacyId = threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId);
+        const thread: LaunchIdentity = {
+          harness: instance.config.kind, instanceId: instance.config.id,
+          yaacThreadId: this.boundThread(legacyId)?.id ?? createdThreadId(legacyId),
+          nativeThreadId,
+          ...(sessionId === nativeThreadId ? {} : { sessionId }),
+        };
+        return hook(parentRef ? { event: "worker.beforeFirstPrompt", parent: parentRef, child: thread }
+          : { event: "thread.beforeFirstPrompt", thread });
       },
-    });
+    };
   }
 
   /** Interrupts a thread's running turn on an agent's behalf (`stop_thread`, own workers only). */
@@ -3724,12 +3736,17 @@ export class Core {
     const key = srcInst.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     try {
-      const native = await srcInst.provider!.forkThread!(src.record.native, {
+      const provider = srcInst.provider!;
+      const launch = await this.firstPromptLaunch(plan.dest, provider).catch(e => {
+        throw rpc("provider_unavailable", (e as Error).message);
+      });
+      const native = await provider.forkThread!(src.record.native, {
         atTurn: p.atTurn ?? null,
         cwd: src.record.cwd,
         model,
         effort: p.effort ?? null,
         mode: p.mode ?? null,
+        beforeFirstPrompt: launch.beforeFirstPrompt,
       }).catch(e => {
         throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
       });
@@ -3745,6 +3762,7 @@ export class Core {
           model: model ?? sourceModel,
         },
         false,
+        launch.storeKey,
       );
       const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
       const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
@@ -3786,10 +3804,14 @@ export class Core {
     const key = dest.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
+    let launchStoreKey: string | null | undefined;
     try {
-      started = await provider.startThread({ cwd: src.record.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+      const { beforeFirstPrompt, storeKey } = await this.firstPromptLaunch(dest, provider);
+      launchStoreKey = storeKey;
+      started = await provider.startThread({ cwd: src.record.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, beforeFirstPrompt }, input);
     } catch (e) {
       this.finishPendingStart(key);
+      if (launchStoreKey !== undefined && e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
       throw rpc("provider_unavailable", `${dest.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
     }
     const title = `${this.summaryOf(src).title} (fork)`;
@@ -3812,6 +3834,7 @@ export class Core {
         uploadsKey,
       },
       true,
+      launchStoreKey,
     );
     const at = nowIso();
     const handoff: Item = {
