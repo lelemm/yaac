@@ -304,9 +304,12 @@ pub struct ChannelRegisterParams {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Resume the existing channel with this ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
 }
 
-/// The daemon-assigned ID for the life of this connection.
+/// The durable channel ID, used to reconnect to the same dialogs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelRegisterResult {
@@ -337,12 +340,12 @@ pub struct DialogOpenParams {
     pub request_id: RequestId,
     pub title: String,
     pub layout: DialogNode,
-    /// YAAC's thread ID. Mutually exclusive with `harness_session_id`.
+    /// YAAC's thread ID. Mutually exclusive with `native_thread_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<ThreadId>,
-    /// The harness's conversation key. Mutually exclusive with `thread_id`.
+    /// The harness's conversation key (Claude `session_id` or Codex `Thread.id`). Mutually exclusive with `thread_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness_session_id: Option<String>,
+    pub native_thread_id: Option<String>,
 }
 
 open_enum! {
@@ -386,6 +389,34 @@ open_enum! {
 pub struct DialogResultParams {
     pub request_id: RequestId,
     pub outcome: DialogOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Map<String, Value>>,
+}
+
+/// Look up a request by its integrator-assigned ID on this channel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogStatusParams {
+    pub request_id: RequestId,
+}
+
+open_enum! {
+    /// A request's current decision state, independent of result delivery.
+    pub enum DialogStatusState fallback Other {
+        Pending = "pending",
+        Answered = "answered",
+        Cancelled = "cancelled",
+        Unknown = "unknown",
+    }
+}
+
+/// Status and any recorded answer. Secret values can be released once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogStatusResult {
+    pub state: DialogStatusState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -25,6 +25,8 @@ import type {
   DialogOpenParams,
   DialogOpenResult,
   DialogResultParams,
+  DialogStatusParams,
+  DialogStatusResult,
   DiscoveryCapsParams,
   DiscoveryCapsResult,
   Empty,
@@ -265,6 +267,7 @@ export const METHODS = {
   INBOX_RESPOND: "inbox/respond",
   CHANNEL_REGISTER: "channel/register",
   DIALOG_OPEN: "dialog/open",
+  DIALOG_STATUS: "dialog/status",
   DIALOG_CLOSE: "dialog/close",
   TERMINAL_SHELLS: "terminal/shells",
   TERMINAL_OPEN: "terminal/open",
@@ -509,6 +512,8 @@ export interface RequestMap {
   "channel/register": { params: ChannelRegisterParams; result: ChannelRegisterResult };
   /** Open a durable dialog, keyed by the integrator's request id. */
   "dialog/open": { params: DialogOpenParams; result: DialogOpenResult };
+  /** Read an integrator dialog's decision state after a disconnect. */
+  "dialog/status": { params: DialogStatusParams; result: DialogStatusResult };
   /** Withdraw the integrator's dialog. */
   "dialog/close": { params: DialogCloseParams; result: Empty };
   /** Terminal shells. */
@@ -737,6 +742,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "inbox/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "channel/register": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "dialog/open": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "dialog/status": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "dialog/close": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/shells": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },

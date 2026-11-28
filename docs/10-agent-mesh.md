@@ -289,9 +289,14 @@ the YAAC home with a limited OS environment.
 ```json
 {
   "command": "/home/me/bin/worker-hook",
-  "args": []
+  "args": [],
+  "events": ["worker.beforeFirstPrompt", "thread.beforeFirstPrompt"]
 }
 ```
+
+The optional `events` array selects which events run the executable. Omitting it keeps the
+default of `worker.beforeFirstPrompt` only. Add `thread.beforeFirstPrompt` to opt in to the
+new event. An empty array runs neither. An unknown event name is a configuration error.
 
 YAAC sends one JSON object on stdin after the native ID is available and before the first
 prompt. A mesh worker with a verified parent on the same target receives
@@ -316,7 +321,7 @@ prompt. A mesh worker with a verified parent on the same target receives
 }
 ```
 
-Every other new thread uses `thread.beforeFirstPrompt`. This covers UI starts, native
+When enabled, every other new thread uses `thread.beforeFirstPrompt`. This covers UI starts, native
 forks, handoff forks, and mesh starts whose parent is on a different target. An idle native
 fork runs the hook during creation, before YAAC returns it for later use. Resumes, adopted
 sessions, and sub-agents started by a harness keep their existing paths.

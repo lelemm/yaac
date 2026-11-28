@@ -57,10 +57,10 @@ type UnsupportedInput = { id: string; required?: boolean; disabled?: boolean; un
 type AnyInput = InputNode | UnsupportedInput;
 type Button = Extract<KnownNode, { type: "button" }>;
 
-export const registration = z.object({ name, description: z.string().max(1024).optional() });
+export const registration = z.object({ name, description: z.string().max(1024).optional(), resume: id.optional() });
 export const withdrawal = z.object({ requestId: id });
 const conversationId = z.string().max(256).refine(nonblank).nullish();
-const open = z.object({ requestId: id, title, layout: z.unknown(), threadId: conversationId, harnessSessionId: conversationId });
+const open = z.object({ requestId: id, title, layout: z.unknown(), threadId: conversationId, nativeThreadId: conversationId });
 const scalar = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
 const answer = z.object({
   requestKind: z.literal("dialog"),
@@ -197,7 +197,7 @@ function readLayout(raw: unknown): Layout {
 
 export function parseOpen(raw: unknown): DialogOpenParams {
   const params = parse(open, raw);
-  if (params.threadId && params.harnessSessionId) invalid("Provide either threadId or harnessSessionId.");
+  if (params.threadId && params.nativeThreadId) invalid("Provide either threadId or nativeThreadId.");
   const layout = readLayout(params.layout);
   const result = { ...params, layout: layout.node };
   if (Buffer.byteLength(JSON.stringify(result)) - layout.imageBytes > DIALOG_BYTES) limit("Dialog content may use at most 256 KiB excluding inline images.");

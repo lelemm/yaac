@@ -42,10 +42,7 @@ for (const accept of [true, false]) {
       const { threadId } = await startAllowed(conn, "/fake say ready", { cwd: home });
       await untilIdle(daemon, threadId);
       const parent = daemon.core.thread(threadId)!;
-      assert.deepEqual(JSON.parse(fs.readFileSync(receipt, "utf8")), {
-        event: "thread.beforeFirstPrompt",
-        thread: { harness: "fake", instanceId: FAKE, yaacThreadId: threadId, nativeThreadId: parent.record.native },
-      });
+      assert.equal(fs.existsSync(receipt), false, "legacy config receives only worker events");
       const spawn = () => fakeOf(daemon).meshAttachment(parent.record.native)!.call({
         tool: "spawn_thread",
         args: { instance: OTHER, text: "/fake say working" },
@@ -88,6 +85,7 @@ test("the thread launch hook can withhold the first UI prompt and return a publi
   const home = tmpHome("yaac-thread-hook-");
   writeJsonAtomic(path.join(home, "worker-launch-hook.json"), {
     command: process.execPath,
+    events: ["thread.beforeFirstPrompt"],
     args: ["-e", `
       const event = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       if (event.event !== "thread.beforeFirstPrompt") process.exit(91);
@@ -108,6 +106,11 @@ test("the thread launch hook can withhold the first UI prompt and return a publi
     return true;
   });
   assert.deepEqual(fakeOf(daemon).received, []);
+  writeJsonAtomic(path.join(home, "worker-launch-hook.json"), {
+    command: process.execPath, events: ["thread.typo"],
+  });
+  await assert.rejects(startThread(conn, "/fake say don't send this either", { cwd: home }), /events must list/);
+  assert.deepEqual(fakeOf(daemon).received, []);
 });
 
 test("native forks and handoffs run the thread launch hook once, including an idle fork", async (t) => {
@@ -119,6 +122,7 @@ test("native forks and handoffs run the thread launch hook once, including an id
   const release = path.join(home, "release-hook");
   writeJsonAtomic(path.join(home, "worker-launch-hook.json"), {
     command: process.execPath,
+    events: ["thread.beforeFirstPrompt"],
     args: ["-e", `
       const fs = require("node:fs");
       const event = fs.readFileSync(0, "utf8");

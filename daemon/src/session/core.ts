@@ -422,8 +422,8 @@ export class Core {
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
     this.channels = new Channels(opts.home, {
-      thread: (id, harnessSessionId) => {
-        const rt = id ? this.threads.get(id) : this.threadForDialog(harnessSessionId);
+      thread: (id, nativeThreadId) => {
+        const rt = id ? this.threads.get(id) : this.threadForDialog(nativeThreadId);
         return rt && !rt.deleted ? { id: rt.id, turnId: rt.activeTurn ?? "" } : undefined;
       },
       publishThread: (threadId, item, started) => {
@@ -3222,17 +3222,8 @@ export class Core {
   /** A hook knows the native conversation key but may not know its YAAC thread id. */
   private threadForDialog(native: NativeId | undefined): ThreadRuntime | undefined {
     if (!native) return undefined;
-    const live = (rt: ThreadRuntime) => Boolean(
-      rt.activeTurn || rt.dispatching || rt.compactDriver || rt.runningCommands.length || rt.record.subagent?.status === "running",
-    );
-    const matches = this.registry.all()
-      .map(({ config }) => this.threadByNative(config.id, native))
-      .filter((rt) => rt !== undefined);
-    matches.sort((a, b) =>
-      Number(live(b)) - Number(live(a)) ||
-      Date.parse(b.record.updatedAt) - Date.parse(a.record.updatedAt) ||
-      a.id.localeCompare(b.id));
-    return matches[0];
+    const matches = new Set(this.registry.all().flatMap(({ config }) => this.threadByNative(config.id, native) ?? []));
+    return matches.size === 1 ? matches.values().next().value : undefined;
   }
 
   /** Journals an item yaacd itself produced (mesh items), through the provider-item path. */
@@ -3383,7 +3374,7 @@ export class Core {
   private async firstPromptLaunch(
     instance: Instance, provider: HarnessProvider, parent?: ThreadRuntime | null,
   ): Promise<{ beforeFirstPrompt?: StartThreadParams["beforeFirstPrompt"]; storeKey?: string | null }> {
-    const hook = loadLaunchHook(this.opts.home, this.opts.env);
+    const hook = loadLaunchHook(this.opts.home, this.opts.env, parent ? "worker.beforeFirstPrompt" : "thread.beforeFirstPrompt");
     if (!hook) return {};
     const storeKey = instance.descriptor.store.key ?? null;
     let parentRef: LaunchIdentity | undefined;

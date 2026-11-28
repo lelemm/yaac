@@ -424,6 +424,9 @@ catalogue! {
         /// Open a durable dialog, keyed by the integrator's request id.
         DialogOpen = "dialog/open" as DIALOG_OPEN:
             t::DialogOpenParams => t::DialogOpenResult, ChannelToDaemon, request Control, response Control;
+        /// Read an integrator dialog's decision state after a disconnect.
+        DialogStatus = "dialog/status" as DIALOG_STATUS:
+            t::DialogStatusParams => t::DialogStatusResult, ChannelToDaemon, request Control, response Control;
         /// Withdraw the integrator's dialog.
         DialogClose = "dialog/close" as DIALOG_CLOSE:
             t::DialogCloseParams => t::Empty, ChannelToDaemon, request Control, response Control;

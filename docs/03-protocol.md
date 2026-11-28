@@ -259,14 +259,15 @@ hangs up its call, and a dropped target ends it with an error.
 **Proposed (P417–P420).** A daemon with local channels advertises `channels` in
 `initialize.features`. The hub uses its existing target connection. Local integrators use
 the [dedicated local channel endpoint](16-external-dialogs.md#connecting), with newline-delimited
-JSON-RPC messages and the same string error codes as the daemon protocol.
+JSON-RPC 2.0 messages. Channel errors carry integer codes and the YAAC reason in `error.data.reason`.
 
 | Direction | Method | Payload and result |
 | --- | --- | --- |
-| Integrator → daemon | `channel/register` | `{ name, description? }` → `{ channelId }`. Once per connection. |
-| Integrator → daemon | `dialog/open` | `{ requestId, title, layout, threadId?, harnessSessionId? }` → `{ accepted: true, placement, threadId? }` after journaling. Supply at most one conversation ID. The request ID is unique on that channel. |
+| Integrator → daemon | `channel/register` | `{ name, description?, resume? }` → `{ channelId }`. Once per connection. `resume` reattaches a disconnected channel. |
+| Integrator → daemon | `dialog/open` | `{ requestId, title, layout, threadId?, nativeThreadId? }` → `{ accepted: true, placement, threadId? }` after journaling. Supply at most one conversation ID. The request ID is unique on that channel. |
+| Integrator → daemon | `dialog/status` | `{ requestId }` → `{ state, action?, values? }`. Reads the request decision on the resumed or live channel. |
 | Integrator → daemon | `dialog/close` | `{ requestId }` → `{}`. Withdraws an open dialog and emits its cancellation. |
-| Daemon → integrator | `dialog/result` | Notification `{ requestId, outcome, action?, values? }`. Only the opening channel receives it. |
+| Daemon → integrator | `dialog/result` | Notification `{ requestId, outcome, action?, values? }`. Only the opening channel or its resumed connection receives it. |
 | Hub → daemon | `inbox/list` | `{}` → `{ requests, channels }`. Snapshot of the target's pending threadless dialogs and registered channels. |
 | Hub → daemon | `inbox/respond` | `{ opId, requestId, response }` → `{}`. Answer or dismiss a threadless dialog by its daemon-stamped ID. |
 | Daemon → hub | `inbox/updated` | Notification `{ request }`. Upsert pending requests and remove terminal requests from the live inbox. |
@@ -746,6 +747,5 @@ show as-is.
 | `thread_in_use` | The thread is being driven elsewhere; this client may only watch. |
 | `turn_in_progress` · `turn_mismatch` | A turn is already running, or the turn id given is not the running one. |
 | `duplicate_request` | The integrator already opened this dialog ID on the same channel. |
-| `channel_closed` | The dialog’s integrator disconnected. The user can dismiss the dialog. |
 | `outcome_unknown` | The operation may or may not have taken effect; see [idempotency](#idempotency). |
 | `upload_mismatch` | The uploaded bytes do not match the declared hash or size. |

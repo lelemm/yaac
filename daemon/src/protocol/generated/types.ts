@@ -783,10 +783,14 @@ export interface ChannelClosedParams {
 export interface ChannelRegisterParams {
   description?: string | null;
   name: string;
+  /**
+   * Resume the existing channel with this ID.
+   */
+  resume?: string | null;
 }
 
 /**
- * The daemon-assigned ID for the life of this connection.
+ * The durable channel ID, used to reconnect to the same dialogs.
  */
 export interface ChannelRegisterResult {
   channelId: string;
@@ -1230,14 +1234,14 @@ export interface DialogNumber {
  * The request id is unique on the channel and is the integrator operation id.
  */
 export interface DialogOpenParams {
-  /**
-   * The harness's conversation key. Mutually exclusive with `thread_id`.
-   */
-  harnessSessionId?: string | null;
   layout: DialogNode;
+  /**
+   * The harness's conversation key (Claude `session_id` or Codex `Thread.id`). Mutually exclusive with `thread_id`.
+   */
+  nativeThreadId?: string | null;
   requestId: RequestId;
   /**
-   * YAAC's thread ID. Mutually exclusive with `harness_session_id`.
+   * YAAC's thread ID. Mutually exclusive with `native_thread_id`.
    */
   threadId?: ThreadId | null;
   title: string;
@@ -1341,6 +1345,29 @@ export interface DialogSource {
   channelId: string;
   name: string;
 }
+
+/**
+ * Look up a request by its integrator-assigned ID on this channel.
+ */
+export interface DialogStatusParams {
+  requestId: RequestId;
+}
+
+/**
+ * Status and any recorded answer. Secret values can be released once.
+ */
+export interface DialogStatusResult {
+  action?: string | null;
+  state: DialogStatusState;
+  values?: { [key: string]: unknown } | null;
+}
+
+/**
+ * A request's current decision state, independent of result delivery.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogStatusState = "pending" | "answered" | "cancelled" | "unknown";
 
 /**
  * A table of plain text cells, in column order.

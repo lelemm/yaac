@@ -13,14 +13,31 @@ import { fakeProviderFactory } from "../src/providers/fake/index.js";
 import type { ProviderFactory } from "../src/providers/types.js";
 import { decodeMessage, type Message } from "../src/protocol/rpc.js";
 import { channelPathFor, connectDaemonSocket, listenChannels, socketPathFor } from "../src/session/server.js";
-import { fakeOf, opId, readAll, RpcFailure, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
+import { fakeOf, opId, readAll, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
+
+type ChannelError = { code: number; message: string; data: { reason: string } };
+type ChannelMessage = Exclude<Message, { type: "error" }> | { type: "error"; id: number | string | null; error: ChannelError };
+
+class ChannelFailure extends Error {
+  constructor(readonly rpc: ChannelError) {
+    super(rpc.message);
+  }
+  get code(): string {
+    return this.rpc.data.reason;
+  }
+}
 
 class ChannelPeer {
-  readonly received: Message[] = [];
+  readonly received: ChannelMessage[] = [];
   private nextId = 1;
 
   constructor(from: Readable, private readonly to: Writable) {
-    createInterface({ input: from }).on("line", (line) => this.received.push(decodeMessage(line)));
+    createInterface({ input: from }).on("line", (line) => {
+      const wire = JSON.parse(line);
+      assert.equal(wire.jsonrpc, "2.0");
+      if (wire.error) this.received.push({ type: "error", id: wire.id, error: wire.error });
+      else this.received.push(decodeMessage(line) as Exclude<Message, { type: "error" }>);
+    });
   }
 
   async call<T>(method: string, params: object = {}): Promise<T> {
@@ -31,7 +48,7 @@ class ChannelPeer {
 
   async response<T>(id: number | string): Promise<T> {
     const msg = await until(() => this.received.find((m) => (m.type === "response" || m.type === "error") && m.id === id), `channel response ${id}`);
-    if (msg.type === "error") throw new RpcFailure(msg.error);
+    if (msg.type === "error") throw new ChannelFailure(msg.error);
     assert.equal(msg.type, "response");
     return msg.result as T;
   }
@@ -53,7 +70,7 @@ const layout: DialogOpenParams["layout"] = {
 const dialog = (requestId: string, threadId?: string): DialogOpenParams => ({ requestId, threadId, title: "Integrate deployment", layout });
 const respond = (action: string, values: Record<string, unknown> = {}) => ({ requestKind: "dialog", action, values });
 const cancel = { requestKind: "dialog", cancelled: true };
-const failedWith = (code: string) => (e: RpcFailure) => e.code === code;
+const failedWith = (code: string) => (e: { code: string }) => e.code === code;
 
 async function connectHost(socketPath: string, id?: string): Promise<TestClient> {
   const socket = await connectDaemonSocket(socketPath);
@@ -140,11 +157,19 @@ test("the Unix endpoint is recovered after its owner crashes", { skip: process.p
 test("one inbox answer wins, and only the channel receives its secret value", async (t) => {
   const { home, daemon, host } = await setup(t);
   const other = await connectHost(daemon.socketPath, "c_phone");
-  const { peer } = await direct(channelPathFor(daemon.config.home));
+  const { socket, peer } = await direct(channelPathFor(daemon.config.home));
+  socket.write("{oops\n");
+  assert.deepEqual(await until(() => peer.received[0]), { type: "error", id: null, error: {
+    code: -32700, message: "Invalid channel JSON.", data: { reason: "parse_error" },
+  } });
+  socket.write('{"id":5,"method":"channel/register"}\n');
+  const malformed = await until(() => peer.received[1]);
+  assert.ok(malformed.type === "error" && malformed.error.code === -32600);
+  await assert.rejects(peer.call("channel/register", { name: "" }), (e: ChannelFailure) => e.rpc.code === -32602 && e.code === "invalid_params");
   await assert.rejects(peer.call("dialog/open", dialog("choice")), failedWith("not_registered"));
   const registration = await peer.call<{ channelId: string }>("channel/register", { name: "Deployment", description: "Test integrator" });
   await assert.rejects(peer.call("channel/register", { name: "Other name" }), failedWith("already_registered"));
-  await assert.rejects(peer.call("thread/sync"), failedWith("method_not_found"));
+  await assert.rejects(peer.call("thread/sync"), (e: ChannelFailure) => e.rpc.code === -32601 && e.code === "method_not_found");
   await until(() => host.notifications.find((n) => n.method === "channel/registered" && n.params.channelId === registration.channelId));
   assert.deepEqual(await peer.call("dialog/open", { ...dialog("choice", "unknown-thread"), source: { name: "Forged" } }), { accepted: true, placement: "inbox" });
   const inbox = await host.request<InboxListResult>("inbox/list");
@@ -156,7 +181,7 @@ test("one inbox answer wins, and only the channel receives its secret value", as
   const file = path.join(home, "dialogs", `${request.requestId}.json`);
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).item.state, "pending", "already durable when open acknowledges");
   await until(() => inboxEvents(host).find((r) => r.requestId === request.requestId));
-  await assert.rejects(peer.call("dialog/open", dialog("choice")), failedWith("duplicate_request"));
+  await assert.rejects(peer.call("dialog/open", dialog("choice")), (e: ChannelFailure) => e.rpc.code === -32000 && e.code === "duplicate_request");
 
   const SECRET = "temporary-dialog-token-never-on-disk-555";
   const requestId = request.requestId;
@@ -168,6 +193,7 @@ test("one inbox answer wins, and only the channel receives its secret value", as
   assert.equal(actions.find((r) => r.status === "rejected")?.reason.code, "request_not_pending");
   assert.deepEqual(await until(() => peer.results()[0]), { requestId: "choice", outcome: "answered", action: "save", values: { team: "ops", token: SECRET } });
   await assert.rejects(peer.call("dialog/close", { requestId: "choice" }), failedWith("request_not_pending"));
+  assert.deepEqual(await peer.call("dialog/status", { requestId: "choice" }), { state: "answered", action: "save", values: { team: "ops" } });
   assert.equal(peer.results().length, 1);
   assert.deepEqual((await host.request<InboxListResult>("inbox/list")).requests, []);
   const resolved = await until(() => inboxEvents(host).find((r) => r.requestId === requestId && r.state === "resolved"));
@@ -192,33 +218,29 @@ test("a Claude hook's native session ID resolves through the provider instance i
     },
   };
   const { daemon, host } = await setup(t, [claude]);
+  const initial = await host.request<ThreadSyncResult>("thread/sync");
+  const thread = initial.changed!.find((row) => row.nativeId === sessionId)!;
+  assert.notEqual(thread.id, sessionId, "the hook ID is not the YAAC thread ID");
+  const { peer } = await direct(channelPathFor(daemon.config.home));
+  await peer.call("channel/register", { name: "Claude hook" });
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("unique"), nativeThreadId: sessionId }), {
+    accepted: true, placement: "thread", threadId: thread.id,
+  });
   const added = await host.request<{ instance: { id: string } }>("providerInstance/add", {
     opId: opId(), kind: "claude", enabled: true, backend: "auto", name: "Second store",
   });
   await host.request("provider/refresh", { instance: added.instance.id });
   const { changed = [] } = await host.request<ThreadSyncResult>("thread/sync");
-  const threads = changed.filter((thread) => thread.nativeId === sessionId);
-  assert.equal(threads.length, 2);
-  const recent = threads.find((thread) => thread.instance === added.instance.id)!;
-  const older = threads.find((thread) => thread.instance !== added.instance.id)!;
-  assert.notEqual(recent.id, sessionId, "the hook ID is not the YAAC thread ID");
-
-  const { peer } = await direct(channelPathFor(daemon.config.home));
-  await peer.call("channel/register", { name: "Claude hook" });
-  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("recent"), harnessSessionId: sessionId }), {
-    accepted: true, placement: "thread", threadId: recent.id,
-  });
-  fakeOf(daemon, older.instance).events.emit({ type: "turnStarted", thread: sessionId, turnId: "live-hook-turn" });
-  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("live"), harnessSessionId: sessionId }), {
-    accepted: true, placement: "thread", threadId: older.id,
-  });
-  const live = await host.request<ThreadReadResult>("thread/read", { threadId: older.id, maxItems: 1 });
-  assert.ok(live.items.some((item) => item.kind === "request" && item.requestKind === "dialog" && item.turnId === "live-hook-turn"));
-  await assert.rejects(peer.call("dialog/open", { ...dialog("both", recent.id), harnessSessionId: sessionId }), /either threadId or harnessSessionId/);
-  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("unknown"), harnessSessionId: "unknown-session" }), {
+  assert.equal(changed.filter((row) => row.nativeId === sessionId).length, 2);
+  fakeOf(daemon, thread.instance).events.emit({ type: "turnStarted", thread: sessionId, turnId: "live-hook-turn" });
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("ambiguous"), nativeThreadId: sessionId }), {
     accepted: true, placement: "inbox",
   });
-  assert.equal((await host.request<InboxListResult>("inbox/list")).requests.length, 1);
+  await assert.rejects(peer.call("dialog/open", { ...dialog("both", thread.id), nativeThreadId: sessionId }), /either threadId or nativeThreadId/);
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("unknown"), nativeThreadId: "unknown-session" }), {
+    accepted: true, placement: "inbox",
+  });
+  assert.equal((await host.request<InboxListResult>("inbox/list")).requests.length, 2);
 });
 
 test("thread dialogs use the journal and survive a daemon restart with the original channel closed", async (t) => {
@@ -227,7 +249,7 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
   await host.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(host, threadId, turnId);
   const { peer } = await direct(channelPathFor(daemon.config.home));
-  await peer.call("channel/register", { name: "Deployment" });
+  const { channelId } = await peer.call<{ channelId: string }>("channel/register", { name: "Deployment" });
   assert.deepEqual(await peer.call("dialog/open", dialog("withdrawn", threadId)), {
     accepted: true, placement: "thread", threadId,
   });
@@ -264,10 +286,11 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
   assert.ok(open && open.kind === "request" && open.requestKind === "dialog" && open.channelOpen);
   const requestId = open.requestId;
   const inboxId = (await host.request<InboxListResult>("inbox/list")).requests[0]!.requestId;
-  assert.equal(fs.readdirSync(path.join(home, "dialogs")).length, 2);
+  assert.equal(fs.readdirSync(path.join(home, "dialogs")).filter((name) => name.startsWith("dialog-")).length, 4);
   // Take a copy while the channel is open, as if the daemon lost power before disconnecting.
   const restartHome = tmpHome();
   fs.cpSync(home, restartHome, { recursive: true, filter: (src) => src !== path.join(home, "run") });
+  await daemon.stop("snapshot taken");
   const restarted = await startDaemon(restartHome);
   t.after(async () => {
     await restarted.stop("test");
@@ -283,19 +306,31 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
   assert.deepEqual(inbox.channels, []);
   assert.equal(inbox.requests[0]?.requestId, inboxId);
   assert.equal(inbox.requests[0]?.requestKind === "dialog" && inbox.requests[0].channelOpen, false);
-  await assert.rejects(reconnect.request("request/respond", { opId: opId(), threadId, requestId, response: respond("save") }), /Deployment is no longer connected/);
-  await reconnect.request("request/respond", { opId: opId(), threadId, requestId, response: cancel });
+  await reconnect.request("request/respond", { opId: opId(), threadId, requestId, response: respond("save", { team: "dev", token: threadSecret }) });
   await reconnect.request("inbox/respond", { opId: opId(), requestId: inboxId, response: cancel });
   assert.equal(restarted.busy().pendingRequests, 0);
+  const resumed = await direct(channelPathFor(restartHome));
+  await resumed.peer.call("channel/register", { name: "Deployment", resume: channelId });
+  await until(() => resumed.peer.results().length === 2);
+  assert.deepEqual(resumed.peer.results().find((r) => r.requestId === "survive"), {
+    requestId: "survive", outcome: "answered", action: "save", values: { team: "dev", token: threadSecret },
+  });
+  assert.deepEqual(await resumed.peer.call("dialog/status", { requestId: "thread-answer" }), {
+    state: "answered", action: "save", values: { team: "dev" },
+  });
+  assert.equal(filesContain(restartHome, threadSecret), false);
 });
 
-test("disconnect marks only that channel's dialogs closed while another channel remains answerable", async (t) => {
+test("offline answer stays answerable, isolated, and is delivered once to its resumed channel", async (t) => {
   const { daemon, host } = await setup(t);
   const first = await direct(channelPathFor(daemon.config.home));
   const second = await direct(channelPathFor(daemon.config.home));
   const { channelId } = await first.peer.call<{ channelId: string }>("channel/register", { name: "First" });
-  await second.peer.call("channel/register", { name: "Second" });
   await first.peer.call("dialog/open", dialog("same-id"));
+  await first.peer.call("dialog/open", dialog("still-pending"));
+  assert.deepEqual(await first.peer.call("dialog/status", { requestId: "same-id" }), { state: "pending" });
+  await assert.rejects(second.peer.call("channel/register", { name: "First", resume: channelId }), failedWith("channel_busy"));
+  await second.peer.call("channel/register", { name: "Second" });
   await second.peer.call("dialog/open", dialog("same-id"));
   first.socket.end();
   await until(() => host.notifications.find((n) => n.method === "channel/closed" && n.params.channelId === channelId));
@@ -304,10 +339,57 @@ test("disconnect marks only that channel's dialogs closed while another channel 
   const b = inbox.requests.find((r) => r.requestKind === "dialog" && r.source.name === "Second");
   assert.ok(a?.requestKind === "dialog" && !a.channelOpen);
   assert.ok(b?.requestKind === "dialog" && b.channelOpen);
-  await assert.rejects(host.request("inbox/respond", { opId: opId(), requestId: a.requestId, response: respond("save") }), failedWith("channel_closed"));
-  await host.request("inbox/respond", { opId: opId(), requestId: a.requestId, response: cancel });
+  const token = "offline-secret-only-on-first-send";
+  await host.request("inbox/respond", { opId: opId(), requestId: a.requestId, response: respond("save", { team: "ops", token }) });
+  await assert.rejects(host.request("inbox/respond", { opId: opId(), requestId: a.requestId, response: cancel }), failedWith("request_not_pending"));
   await host.request("inbox/respond", { opId: opId(), requestId: b.requestId, response: cancel });
   assert.deepEqual(await until(() => second.peer.results()[0]), { requestId: "same-id", outcome: "cancelled" });
+  assert.equal(filesContain(daemon.config.home, token), false);
+  const resumed = await direct(channelPathFor(daemon.config.home));
+  assert.deepEqual(await resumed.peer.call("channel/register", { name: "First", resume: channelId }), { channelId });
+  assert.deepEqual(await until(() => resumed.peer.results()[0]), {
+    requestId: "same-id", outcome: "answered", action: "save", values: { team: "ops", token },
+  });
+  const pending = (await host.request<InboxListResult>("inbox/list")).requests[0];
+  assert.ok(pending?.requestKind === "dialog" && pending.channelOpen);
+  await assert.rejects(resumed.peer.call("dialog/open", dialog("same-id")), failedWith("duplicate_request"));
+  const closed = () => host.notifications.filter((n) => n.method === "channel/closed" && n.params.channelId === channelId).length;
+  const count = closed();
+  resumed.socket.end();
+  await until(() => closed() === count + 1);
+  const again = await direct(channelPathFor(daemon.config.home));
+  await again.peer.call("channel/register", { name: "First", resume: channelId });
+  assert.deepEqual(await again.peer.call("dialog/status", { requestId: "same-id" }), { state: "answered", action: "save", values: { team: "ops" } });
+  assert.equal(again.peer.results().length, 0);
+});
+
+test("an offline decision survives a daemon restart, with volatile secrets redacted", async (t) => {
+  const { home, daemon, host } = await setup(t);
+  const opening = await direct(channelPathFor(home));
+  const { channelId } = await opening.peer.call<{ channelId: string }>("channel/register", { name: "Durable" });
+  await opening.peer.call("dialog/open", dialog("offline"));
+  opening.socket.end();
+  await until(() => host.notifications.some((n) => n.method === "channel/closed" && n.params.channelId === channelId));
+  const requestId = (await host.request<InboxListResult>("inbox/list")).requests[0]!.requestId;
+  const secret = "undelivered-secret-lost-on-daemon-restart";
+  await host.request("inbox/respond", { opId: opId(), requestId, response: respond("save", { team: "dev", token: secret }) });
+  assert.equal(filesContain(home, secret), false);
+  await daemon.stop("test restart");
+
+  const restarted = await startDaemon(home);
+  // setup's cleanup stops the first daemon. Stop this one before it removes the home.
+  try {
+    const resumed = await direct(channelPathFor(home));
+    await resumed.peer.call("channel/register", { name: "Durable", resume: channelId });
+    assert.deepEqual(await until(() => resumed.peer.results()[0]), {
+      requestId: "offline", outcome: "answered", action: "save", values: { team: "dev" },
+    });
+    assert.deepEqual(await resumed.peer.call("dialog/status", { requestId: "offline" }), {
+      state: "answered", action: "save", values: { team: "dev" },
+    });
+  } finally {
+    await restarted.stop("test");
+  }
 });
 
 test("layout validation rejects unsafe defaults, duplicate IDs, excessive depth, and unknown required inputs", async (t) => {
@@ -324,17 +406,17 @@ test("layout validation rejects unsafe defaults, duplicate IDs, excessive depth,
   await assert.rejects(open({ type: "text", text: "a".repeat(256 * 1024) }), failedWith("limit_exceeded"));
   await assert.rejects(open({ type: "column", children: Array.from({ length: 500 }, () => ({ type: "divider" })) }), failedWith("limit_exceeded"));
   await assert.rejects(open({ type: "image", src: "file:///tmp/local.png", alt: "" }), /Expected an HTTPS image/);
-  assert.deepEqual(fs.readdirSync(path.join(home, "dialogs")), []);
+  assert.deepEqual(fs.readdirSync(path.join(home, "dialogs")).filter((name) => name.startsWith("dialog-")), []);
   assert.equal(filesContain(home, SECRET), false);
   await open({
     type: "column",
     children: [{ type: "newInput", id: "future", required: true, default: SECRET },
-      { type: "button", id: "send", label: "Send" }, { type: "button", id: "skip", label: "Skip", submit: false }],
+      { type: "button", id: "send", label: "Send" }, { type: "button", id: "cancel", label: "Cancel", submit: false }],
   });
   const { requestId } = (await host.request<InboxListResult>("inbox/list")).requests[0]!;
   await assert.rejects(host.request("inbox/respond", { opId: opId(), requestId, response: respond("send") }), /future.*required/);
-  await host.request("inbox/respond", { opId: opId(), requestId, response: respond("skip") });
-  assert.deepEqual(await until(() => peer.results()[0]), { requestId: "validate", outcome: "answered", action: "skip", values: {} });
+  await host.request("inbox/respond", { opId: opId(), requestId, response: respond("cancel") });
+  assert.deepEqual(await until(() => peer.results()[0]), { requestId: "validate", outcome: "answered", action: "cancel", values: {} });
   assert.equal(filesContain(home, SECRET), false);
 });
 

@@ -35,9 +35,13 @@ export interface ThreadLaunchEvent {
   thread: LaunchIdentity;
 }
 
-type LaunchHook = (event: ThreadLaunchEvent | WorkerLaunchEvent) => Promise<void>;
+type LaunchEvent = ThreadLaunchEvent | WorkerLaunchEvent;
+const WORKER_EVENT = "worker.beforeFirstPrompt";
+const THREAD_EVENT = "thread.beforeFirstPrompt";
 
-export function loadLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv): LaunchHook | null {
+type LaunchHook = (event: LaunchEvent) => Promise<void>;
+
+export function loadLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv, eventName: LaunchEvent["event"]): LaunchHook | null {
   const filename = path.join(home, CONFIG_NAME);
   let info: fs.Stats;
   try {
@@ -57,12 +61,16 @@ export function loadLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv): Laun
     throw new Error(`${CONFIG_NAME} must contain valid JSON.`);
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Invalid ${CONFIG_NAME}.`);
-  const { command, args = [] } = raw as { command?: unknown; args?: unknown };
+  const { command, args = [], events = [WORKER_EVENT] } = raw as { command?: unknown; args?: unknown; events?: unknown };
   if (typeof command !== "string" || !path.isAbsolute(command) || command.includes("\0") ||
       !Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string" && !arg.includes("\0")) ||
-      Object.keys(raw).some((key) => key !== "command" && key !== "args")) {
+      Object.keys(raw).some((key) => key !== "command" && key !== "args" && key !== "events")) {
     throw new Error(`${CONFIG_NAME} requires an absolute executable path in command and accepts optional string args.`);
   }
+  if (!Array.isArray(events) || !events.every((event) => event === WORKER_EVENT || event === THREAD_EVENT)) {
+    throw new Error(`${CONFIG_NAME} events must list worker.beforeFirstPrompt or thread.beforeFirstPrompt.`);
+  }
+  if (!events.includes(eventName)) return null;
   const env = Object.fromEntries(Object.entries(daemonEnv).filter(([key]) => ENV_KEYS.has(key.toUpperCase())));
   return async (event) => {
     const result = await run(command, args, {

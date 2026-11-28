@@ -34,41 +34,49 @@ it with the owner.
 Node 22.22.3's bundled libuv creates the Windows pipe with the default Windows security
 descriptor. Ordinary users of other accounts can have read access under that descriptor,
 but cannot open the pipe for read/write or send `channel/register`. The creator, LocalSystem,
-and administrators have full control. Each connection receives results only for dialogs it
-registered and opened. [Node's libuv source](https://github.com/nodejs/node/blob/v22.22.3/deps/uv/src/win/pipe.c#L505-L513),
+and administrators have full control. Each connection receives results only for dialogs on
+the channel it registers or resumes. [Node's libuv source](https://github.com/nodejs/node/blob/v22.22.3/deps/uv/src/win/pipe.c#L505-L513),
 [Microsoft's named-pipe access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights).
 
 See [the example integrator](../examples/dialog-demo.mjs) for a runtime-defined dropdown.
 
 ## The integrator's side (P417)
 
-- **`channel/register { name, description? }`** → `{ channelId }`. The name is shown to the user as
-  the dialog's source ("From <name> on <target>"). One channel per connection; it ends when the
-  connection closes.
-- **`dialog/open { requestId, title, layout, threadId?, harnessSessionId? }`** →
+- **`channel/register { name, description?, resume? }`** → `{ channelId }`. Save the returned
+  ID and pass it as `resume` to reattach on a later connection. The original name identifies the
+  dialog source. Each channel can have one live connection. Resuming a channel that is still
+  attached returns `channel_busy`.
+- **`dialog/open { requestId, title, layout, threadId?, nativeThreadId? }`** →
   `{ accepted: true, placement: "thread" | "inbox", threadId? }` after journaling (invariant 8).
   The integrator supplies `requestId` as the operation ID, unique within its channel. A repeated
-  ID is refused with `duplicate_request`. Supply either `threadId` or `harnessSessionId`, or
+  ID is refused with `duplicate_request`. Supply either `threadId` or `nativeThreadId`, or
   omit both. If the daemon resolves a thread, the result gives its YAAC thread ID and the
   dialog appears in that thread and in Needs you. Otherwise it appears under the target in
-  Needs you and the result has `placement: "inbox"`.
+  Needs you and the result has `placement: "inbox"`. An ambiguous native ID goes to the inbox
+  just like an unknown one.
 - **Notification `dialog/result { requestId, outcome, action?, values? }`** to the channel:
   `answered` carries the button ID in `action` and the input values keyed by ID in `values`.
   The other outcomes are `cancelled` and `unknown` (see below).
+  Each button yields `answered` even when its label is Cancel or it sets `submit: false`.
+  Closing the dialog (×, Escape, or Back) yields `cancelled`.
+- **`dialog/status { requestId }`** returns `{ state, action?, values? }`, where `state` is
+  `pending`, `answered`, `cancelled`, or `unknown`. Use the integrator's request ID on
+  the same channel.
 - **`dialog/close { requestId }`**: the integrator withdraws a dialog it no longer needs; the UIs
   drop it and the result is `cancelled` (once).
 
 ### From a harness hook
 
 For a Claude Code command hook, read the JSON on stdin and pass its `session_id` as
-`harnessSessionId` (verified against the installed Claude Code 2.1.332). For Codex pass the
-conversation's `Thread.id`. If the integrator already has the YAAC thread ID, it can send
-`threadId` instead. When the same native key is known in several provider instances, the
-daemon prefers a live thread, then the most recently updated one.
+`nativeThreadId` (verified against the installed Claude Code 2.1.332). For Codex pass the
+conversation's `Thread.id`. Codex's `sessionId` identifies a session tree. If the integrator
+already has the YAAC thread ID, use `threadId` by itself. A native ID is used only when it
+identifies exactly one YAAC thread.
 [Claude Code hook input fields](https://code.claude.com/docs/en/hooks#common-input-fields).
 
 An integrator can also learn `yaacThreadId` from YAAC's own launch hook. Use `thread.yaacThreadId`
 for `thread.beforeFirstPrompt` or `child.yaacThreadId` for `worker.beforeFirstPrompt`.
+Enable `thread.beforeFirstPrompt` in the launch config to receive the thread event.
 A dialog opened before the new thread is registered follows the usual inbox placement.
 [YAAC launch hook](10-agent-mesh.md#launch-hook).
 
@@ -107,13 +115,13 @@ cannot have defaults and their answers stay out of journals and caches.
 A layout can have at most 500 nodes across 12 levels. Dialog content and answers each have a
 256 KiB limit. Inline raster image data URLs have a separate 1 MiB budget across the dialog.
 An oversized or invalid dialog is refused before it reaches the user. The target can have up
-to 256 registered channels and 16 MiB of pending dialog records, which keeps full snapshots
+to 256 connected channels and 16 MiB of pending dialog records, which keeps full snapshots
 within the protocol's message limit.
 
 ## How it travels (P418)
 
 - **`yaacd`** turns `dialog/open` into an ordinary **request** with a new body kind **`dialog`**
-  (`RequestBody::Dialog`), raised on the resolved thread when either supplied ID is known, else on a
+  (`RequestBody::Dialog`), raised in the thread when the supplied ID resolves uniquely, or in a
   target-level **inbox** (a pseudo-scope the hub lists under Needs you). It is journaled before it
   is acknowledged, survives the host being away, and is never auto-answered or timed out
   (invariant 8). The request carries `source: { channelId, name }` so every UI says where it comes
@@ -125,20 +133,39 @@ within the protocol's message limit.
 - **The UIs** render the dialog with the existing request cards / form renderer (egui, WPF,
   Android), plus a notification on the phone like any request. Secret fields are never cached on the
   host (as secret questions today).
-- **One result per request.** Answers carry an operation id; the first one wins, later taps on any
-  UI see "already answered". A dropped connection while answering shows **outcome unknown** to the
-  user (invariant 10). The daemon knows an accepted answer from the committed record, and sends
-  that result on the original channel. The wire reserves `unknown` for an indeterminate result.
-  A broken integrator transport can leave delivery uncertain, and the daemon never resends it.
-- **Integrator gone.** If the channel closes while a dialog is open, the dialog stays visible,
-  marked "<name> is no longer connected"; answering it is refused with that reason; it can be
-  dismissed by a cancellation response. Nothing is delivered later to a different connection.
-  An open dialog restored after a daemon restart is also disconnected. Deleting its thread
-  moves a pending dialog into the target inbox.
+- **One decision per request.** Answers carry an operation ID. The first accepted answer
+  records the final decision. A later answer gets `request_not_pending`. A dropped hub
+  connection can leave the UI unsure whether its operation took effect, so it never retries
+  automatically (invariant 10).
+- **Delivery is separate.** A disconnected dialog stays answerable and says “<name> is not
+  connected · your answer will be delivered when it reconnects”. The daemon retains an open
+  dialog until answered, withdrawn, or dismissed. It journals each decision before sending
+  its result. On resume it emits queued results once per connection. A successful socket write
+  retires the queued result. An interrupted write can cause a result to appear on a later
+  connection, so integrators deduplicate by `requestId`. The redacted decision remains
+  available to `dialog/status`.
+- **Secret values have one delivery attempt.** Secrets can be returned through the first
+  `dialog/result` or `dialog/status` that releases them. The daemon discards them before
+  attempting that write and keeps any waiting values only in memory. After a daemon restart,
+  a queued result or status can still report the decision and non-secret values. A later
+  notification or status reply omits secrets that were released earlier.
+- **Restart and deletion.** A disconnected channel can be resumed after a daemon restart.
+  Deleting a thread moves its pending dialogs into the target inbox.
+
+Channel errors use JSON-RPC 2.0 integer codes. `error.data.reason` gives the stable YAAC reason
+such as `duplicate_request`, `channel_busy`, or `request_not_found`.
+
+| Code | Meaning |
+| --- | --- |
+| `-32700` | Invalid JSON |
+| `-32600` | Invalid JSON-RPC request |
+| `-32601` | Unknown method |
+| `-32602` | Invalid method parameters |
+| `-32000` | Application error |
 
 ## Contracts (names; types in `yaac-protocol`)
 
-Integrator ⇄ `yaacd` (a channel connection): `channel/register`, `dialog/open`, `dialog/close`,
+Integrator ⇄ `yaacd` (a channel connection): `channel/register`, `dialog/open`, `dialog/status`, `dialog/close`,
 notification `dialog/result`.
 
 `yaacd` ⇄ hub (daemon protocol): capability `channels`; notifications `channel/registered
