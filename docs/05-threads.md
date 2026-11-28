@@ -36,7 +36,9 @@ What follows from that:
 
 A thread that has not sent its first message is a **draft**. Drafts exist only on the host.
 The thread is created together with its first message (`thread/start`), so an abandoned draft
-leaves nothing behind in the harness. The user can pick the project, its checkout and the
+leaves nothing behind in the harness. One Send of a draft is one `thread/start` with one
+operation id: while it is on its way the draft cannot be sent again, and after a lost answer a
+Send again reuses that id ([07](07-ui.md#composer)). The user can pick the project, its checkout and the
 provider instance before sending. A new thread starts at the project's relative folder in
 the chosen checkout, with the project's own checkout as the default.
 

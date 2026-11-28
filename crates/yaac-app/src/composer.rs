@@ -506,6 +506,11 @@ fn attach_button(ui: &mut egui::Ui, app: &YaacApp, d: &DraftRef, actions: &mut V
 }
 
 /// The send button: filled when the message can go; otherwise plain, saying why.
+/// Send while its request is on its way ("Starting…", "Sending…"): shown, never clickable.
+fn busy_button(ui: &mut egui::Ui, p: &Palette, label: &str) {
+    ui.add_enabled_ui(false, |ui| widgets::plain(ui, p, label, None));
+}
+
 fn send_button(ui: &mut egui::Ui, p: &Palette, has_content: bool, blocked: Option<&str>) -> bool {
     match blocked {
         Some(why) if has_content => {
@@ -567,6 +572,9 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
             // A request waiting on the user dims the composer only when no turn runs; while one
             // runs, a message can still be queued behind the answer (D166).
             let dimmed = dimmed_hint.is_some() && !running;
+            // The message before is still on its way: Send and Queue wait for its answer.
+            let sending = !editing && app.client.sending(key);
+            let blocked = if sending { Some("The message before is still on its way.".to_owned()) } else { blocked };
             queue_strip(ui, app, key, send_now, actions);
             let d = DraftRef::Thread(key.clone());
             let id = composer_id(&d);
@@ -687,7 +695,9 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         }
                         let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
                         if !running {
-                            if send_button(ui, &p, has, blocked.as_deref()) {
+                            if sending {
+                                busy_button(ui, &p, "Sending…");
+                            } else if send_button(ui, &p, has, blocked.as_deref()) {
                                 submit = Submit::Send;
                             }
                             attach_button(ui, app, &d, actions);
@@ -1498,6 +1508,9 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         let blocked = yaac_core::attachments::blocked(&chip_views);
         let has = !d.draft.text.trim().is_empty() || !d.draft.attachments.is_empty();
         let comp = yaac_core::skills::for_new_thread(&app.client.state, &d);
+        // One Send, one thread: read-only and "Starting…" until `thread/start` answers.
+        let start = app.client.draft_start(id);
+        let starting = start == Some(yaac_core::client::DraftStart::Starting);
         let mut voice_click = None;
         for k in crate::voice::settle_elsewhere(app, Some(&dref)) {
             actions.push(Action::DraftEdited(k));
@@ -1514,15 +1527,19 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                         skills_ui::keys(ui, &mut app.ui.skills, eid, c, &mut text, &mut app.ui.focus_composer);
                     }
                     dictated_words(ui, app, &dref, eid, &mut text);
-                    send = file_text_box(ui, app, &dref, &mut text, eid, &format!("Message {name}…"), true);
+                    send = file_text_box(ui, app, &dref, &mut text, eid, &format!("Message {name}…"), !starting);
                     voice_line(ui, app, &dref);
                     if let Some(c) = &comp {
                         skills_ui::show(ui, &mut app.ui.skills, eid, c, &app.client.state, &mut text, &mut app.ui.focus_composer, &p, actions);
                     }
-                    if compose::is_compact_command(&text) {
+                    if starting {
+                        ui.label(widgets::secondary("Starting the thread…", &p));
+                    } else if start == Some(yaac_core::client::DraftStart::Unknown) {
+                        ui.label(widgets::secondary(yaac_core::client::START_UNKNOWN, &p));
+                    } else if compose::is_compact_command(&text) {
                         ui.label(widgets::secondary("Start the conversation before compacting context.", &p));
                     }
-                    if text != d.draft.text && let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
+                    if !starting && text != d.draft.text && let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
                         dd.draft.text = text;
                         actions.push(Action::DraftEdited(dref.clone()));
                     }
@@ -1532,7 +1549,9 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let why = if d.target.is_none() { Some("Choose a project to start the thread.") } else { blocked.as_deref() };
-                    if send_button(ui, &p, has, why) {
+                    if starting {
+                        busy_button(ui, &p, "Starting…");
+                    } else if send_button(ui, &p, has, why) {
                         send = Submit::Send;
                     }
                     attach_button(ui, app, &dref, actions);
@@ -1548,7 +1567,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             widgets::focus_ring(ui, inner.response.rect, &p);
         }
         // A new thread runs nothing yet: Send now is an ordinary send.
-        if send != Submit::None && d.target.is_some() {
+        if send != Submit::None && d.target.is_some() && !starting {
             actions.push(Action::StartDraft(id));
         }
         ui.add_space(6.0);
