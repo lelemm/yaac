@@ -129,28 +129,70 @@ fn log_file(paths: &HubPaths) -> PathBuf {
 /// Runs `wsl.exe <argv>` without a console window. Its standard error is kept for the message
 /// and appended to `log` with its standard output.
 fn run_wsl(argv: &[String], log: &Path) -> Result<(), String> {
+    run_wsl_with(argv, log, None, None)
+}
+
+/// [`run_wsl`], with standard input from the file `input` (else nothing), and killed after
+/// `timeout` (else waited for).
+pub(crate) fn run_wsl_with(argv: &[String], log: &Path, input: Option<&Path>, timeout: Option<Duration>) -> Result<(), String> {
+    use std::io::Read as _;
     let wsl = wsl_exe();
     let mut cmd = Command::new(&wsl);
-    cmd.args(argv).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let stdin = match input {
+        Some(path) => Stdio::from(std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?),
+        None => Stdio::null(),
+    };
+    cmd.args(argv).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = cmd.output().map_err(|e| format!("cannot run {}: {e}", wsl.display()))?;
+    let mut child = cmd.spawn().map_err(|e| format!("cannot run {}: {e}", wsl.display()))?;
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut out);
+            }
+            out
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let deadline = timeout.map(|t| Instant::now() + t);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if deadline.is_some_and(|d| Instant::now() >= d) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("wsl.exe did not finish within {} seconds", timeout.unwrap_or_default().as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => break Err(format!("cannot wait for {}: {e}", wsl.display())),
+        }
+    };
+    let (out, err) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
         use std::io::Write as _;
-        let _ = f.write_all(&out.stdout);
-        let _ = f.write_all(&out.stderr);
+        let _ = f.write_all(&out);
+        let _ = f.write_all(&err);
     }
-    if out.status.success() {
+    let status = status?;
+    if status.success() {
         return Ok(());
     }
     // wsl.exe's own messages are UTF-16; the script's are UTF-8.
-    let err = String::from_utf8_lossy(&out.stderr).replace('\0', "");
+    let err = String::from_utf8_lossy(&err).replace('\0', "");
     let err = err.trim();
-    Err(if err.is_empty() { format!("wsl.exe exited with {}", out.status) } else { err.to_owned() })
+    Err(if err.is_empty() { format!("wsl.exe exited with {status}") } else { err.to_owned() })
+}
+
+/// Where `yaac wsl-hub` and the updater's steps in WSL (P423) log what `wsl.exe` printed.
+pub(crate) fn log_path(paths: &HubPaths) -> PathBuf {
+    log_file(paths)
 }
 
 fn wsl_exe() -> PathBuf {

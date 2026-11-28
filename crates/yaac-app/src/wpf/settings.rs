@@ -1102,13 +1102,25 @@ fn advanced(app: &YaacApp) -> Value {
                     json!({ "detail": if app.remote_pc().is_some() { "Set on the PC." } else { "" } }))]
             }),
             json!({ "id": "error", "status": state.hub.last_error, "tone": "error" })
-        ].into_iter().chain(reclaim_rows(app)).chain(transfer_rows(app)).collect()),
+        ].into_iter().chain(wsl_update_rows(app)).chain(reclaim_rows(app)).chain(transfer_rows(app)).collect()),
         section("cache", "Cache", vec![json!({
             "id": "cache", "detail": "Thread lists and transcripts are read again from each target. Drafts are kept.",
             "actions": [action("advanced.clearCache", "Clear cache", true)]
         })]),
         section("diagnostics", "Diagnostics", diag)
     ] })
+}
+
+/// The hub in this PC's WSL being brought to this build, or **Retry** when that failed (P423).
+fn wsl_update_rows(app: &YaacApp) -> Vec<Value> {
+    #[cfg(feature = "hub")]
+    if let Some(line) = app.wsl_update_line() {
+        let failed = app.wsl_update_failed();
+        let actions = if failed { vec![with(action("hubs.retry", "Retry", true), json!({ "kind": "primary" }))] } else { Vec::new() };
+        return vec![json!({ "id": "wslHubUpdate", "status": line, "tone": if failed { "warning" } else { "accent" }, "actions": actions })];
+    }
+    let _ = app;
+    Vec::new()
 }
 
 /// **Start the hub here again**, when the hub moved away from this PC and does not answer.
@@ -1275,6 +1287,10 @@ fn about(app: &YaacApp) -> Value {
         Phase::Ready(pending) => components.push(json!({
             "id": "update", "label": format!("YAAC {} is downloaded", pending.version),
             "actions": [with(action("update.install", "Restart to update", true), json!({ "kind": "primary" }))]
+        })),
+        Phase::StoppingHub { pending, label } => components.push(json!({
+            "id": "update", "label": format!("YAAC {} is downloaded", pending.version),
+            "status": format!("Stopping the hub in {label} to install it…"), "tone": "accent"
         })),
         Phase::Failed { message, .. } => components.push(json!({
             "id": "update", "status": message, "tone": "error",

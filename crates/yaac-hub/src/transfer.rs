@@ -199,6 +199,75 @@ pub fn wsl_service_remove_argv(distro: &str) -> Vec<String> {
     out
 }
 
+/// The root script that stops the hub's service before YAAC for Windows is updated (P423): the
+/// hub there runs this PC's `yaac.exe local-daemon` through interop, which holds the file the
+/// installer replaces. The service stays enabled. It fails if the service still runs afterwards.
+pub fn stop_script() -> String {
+    format!(
+        r#"systemctl stop {SERVICE_UNIT} 2>/dev/null
+if systemctl is-active --quiet {SERVICE_UNIT}; then echo "yaac: {SERVICE_UNIT} still runs" >&2; exit 1; fi
+exit 0"#
+    )
+}
+
+/// The root script that (re)starts the hub's service after its binary was replaced, or after a
+/// stop for an update that did not go in (P423). It fails if the service does not run then.
+pub fn restart_script() -> String {
+    format!(
+        r#"systemctl restart {SERVICE_UNIT} || exit 1
+if ! systemctl is-active --quiet {SERVICE_UNIT}; then echo "yaac: {SERVICE_UNIT} did not start (systemctl status {SERVICE_UNIT})" >&2; exit 1; fi
+exit 0"#
+    )
+}
+
+/// The script, run as the hub's own user, that puts a new hub binary in place (P423): its bytes
+/// come on standard input; `$1` is their SHA-256 and `$2` their size. They go to
+/// `<data>/bin/yaac.new`, are checked and tried (`--version`), and only then renamed over
+/// `<data>/bin/yaac`, so the hub there is either the old binary or the new one, never a part.
+pub fn place_hub_script() -> String {
+    format!(
+        r#"{DISTRO_DATA_DIR}; b="$d/bin"; n="$b/yaac.new"
+fail() {{ rm -f "$n"; echo "yaac: $1" >&2; exit 1; }}
+mkdir -p "$b" || fail "cannot create $b"
+cat > "$n" || fail "cannot write $n"
+[ "$(wc -c < "$n" | tr -d ' ')" = "$2" ] || fail "the hub copied into WSL is not $2 bytes"
+[ "$(sha256sum "$n" | cut -d' ' -f1)" = "$1" ] || fail "the hub copied into WSL does not match its SHA-256"
+chmod 755 "$n" || fail "cannot make $n executable"
+"$n" --version >/dev/null 2>&1 || fail "the new hub does not run in this distro"
+mv -f "$n" "$b/yaac" || fail "cannot replace $b/yaac""#
+    )
+}
+
+/// `-d <distro> -u root --exec sh -c <script> sh`.
+fn wsl_root_argv(distro: &str, script: String) -> Vec<String> {
+    let mut out: Vec<String> = ["-d", distro, "-u", "root", "--exec", "sh", "-c"].map(str::to_owned).into();
+    out.extend([script, "sh".into()]);
+    out
+}
+
+/// What the window runs after `wsl.exe` to stop the hub's service in `distro` before an update
+/// ([`stop_script`], as root).
+pub fn wsl_service_stop_argv(distro: &str) -> Vec<String> {
+    wsl_root_argv(distro, stop_script())
+}
+
+/// What the window runs after `wsl.exe` to (re)start the hub's service in `distro`
+/// ([`restart_script`], as root).
+pub fn wsl_service_restart_argv(distro: &str) -> Vec<String> {
+    wsl_root_argv(distro, restart_script())
+}
+
+/// What the window runs after `wsl.exe`, with the new hub binary as standard input, to put it
+/// in place ([`place_hub_script`]) as the user its bridge reaches the hub as.
+pub fn wsl_place_hub_argv(distro: &str, user: Option<&str>, sha256: &str, size: u64) -> Vec<String> {
+    let mut out = vec!["-d".to_owned(), distro.to_owned()];
+    if let Some(user) = user {
+        out.extend(["-u".into(), user.to_owned()]);
+    }
+    out.extend(["--exec".into(), "sh".into(), "-c".into(), place_hub_script(), "sh".into(), sha256.to_owned(), size.to_string()]);
+    out
+}
+
 /// `yaac wsl-hub …`, read back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WslHubCommand {
@@ -691,6 +760,86 @@ mod tests {
         fake_systemctl(&bin, &log, true);
         let (ok, err) = run_script(&remove_script(), &[u], &bin);
         assert!(!ok && err.contains("still runs"), "{err}");
+    }
+
+    #[test]
+    fn an_update_stops_restarts_and_refreshes_the_hub_through_wsl() {
+        let stop = wsl_service_stop_argv("Ubuntu");
+        assert_eq!(&stop[..7], ["-d", "Ubuntu", "-u", "root", "--exec", "sh", "-c"]);
+        assert_eq!(&stop[7..], [stop_script(), "sh".into()]);
+        let restart = wsl_service_restart_argv("Ubuntu");
+        assert_eq!(&restart[..7], ["-d", "Ubuntu", "-u", "root", "--exec", "sh", "-c"]);
+        assert_eq!(restart[7], restart_script());
+        // The binary is placed as the bridge's user, never as root.
+        let place = wsl_place_hub_argv("Ubuntu", Some("dev"), "ab12", 42);
+        assert_eq!(&place[..7], ["-d", "Ubuntu", "-u", "dev", "--exec", "sh", "-c"]);
+        assert_eq!(&place[7..], [place_hub_script(), "sh".into(), "ab12".into(), "42".into()]);
+        let place = wsl_place_hub_argv("Ubuntu", None, "ab12", 42);
+        assert_eq!(&place[..5], ["-d", "Ubuntu", "--exec", "sh", "-c"]);
+        assert!(!place.contains(&"root".to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_stop_and_restart_scripts_check_the_service_afterwards() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, log) = (dir.path().join("bin"), dir.path().join("log"));
+        fake_systemctl(&bin, &log, false);
+        let (ok, err) = run_script(&stop_script(), &[], &bin);
+        assert!(ok, "{err}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), format!("stop {SERVICE_UNIT}\nis-active --quiet {SERVICE_UNIT}\n"));
+        // Still running afterwards: a failure, so the installer is not run.
+        fake_systemctl(&bin, &log, true);
+        let (ok, err) = run_script(&stop_script(), &[], &bin);
+        assert!(!ok && err.contains("still runs"), "{err}");
+        std::fs::remove_file(&log).unwrap();
+        let (ok, err) = run_script(&restart_script(), &[], &bin);
+        assert!(ok, "{err}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), format!("restart {SERVICE_UNIT}\nis-active --quiet {SERVICE_UNIT}\n"));
+        fake_systemctl(&bin, &log, false);
+        let (ok, err) = run_script(&restart_script(), &[], &bin);
+        assert!(!ok && err.contains("did not start"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_new_hub_replaces_the_old_one_only_when_it_is_whole_and_runs() {
+        use sha2::Digest as _;
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let yaac = data.join("bin/yaac");
+        std::fs::create_dir_all(data.join("bin")).unwrap();
+        std::fs::write(&yaac, "old").unwrap();
+        let place = |bytes: &[u8], sha: &str, size: usize| {
+            let mut child = std::process::Command::new("sh")
+                .arg("-c").arg(place_hub_script()).arg("sh").arg(sha).arg(size.to_string())
+                .env("YAAC_DATA_DIR", &data)
+                .stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+                .spawn().unwrap();
+            child.stdin.take().unwrap().write_all(bytes).unwrap();
+            let out = child.wait_with_output().unwrap();
+            (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+        };
+        let sha = |b: &[u8]| sha2::Sha256::digest(b).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let new: &[u8] = b"#!/bin/sh\nexit 0\n";
+        let broken: &[u8] = b"#!/bin/sh\nexit 1\n";
+        for (bytes, claimed, size, why) in [
+            (new, sha(b"other"), new.len(), "SHA-256"),
+            (new, sha(new), new.len() + 1, "bytes"),
+            (broken, sha(broken), broken.len(), "does not run"),
+        ] {
+            let (ok, err) = place(bytes, &claimed, size);
+            assert!(!ok && err.contains(why), "{why}: {err}");
+            assert_eq!(std::fs::read(&yaac).unwrap(), b"old", "{why}: the old hub stays");
+            assert!(!data.join("bin/yaac.new").exists(), "{why}: nothing left over");
+        }
+        let (ok, err) = place(new, &sha(new), new.len());
+        assert!(ok, "{err}");
+        assert_eq!(std::fs::read(&yaac).unwrap(), new);
+        assert_eq!(std::fs::metadata(&yaac).unwrap().permissions().mode() & 0o777, 0o755);
+        assert!(!data.join("bin/yaac.new").exists());
     }
 
     #[cfg(unix)]

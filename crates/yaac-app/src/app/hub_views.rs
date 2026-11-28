@@ -225,7 +225,7 @@ impl YaacApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -272,11 +272,11 @@ mod tests {
         });
     }
 
-    fn local(dir: &std::path::Path) -> AttachConfig {
+    pub(crate) fn local(dir: &std::path::Path) -> AttachConfig {
         AttachConfig { paths: yaac_hub::HubPaths::under(dir), exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_millis(200), remote: None, bridge: None }
     }
 
-    fn window(config: AttachConfig) -> YaacApp {
+    pub(crate) fn window(config: AttachConfig) -> YaacApp {
         let launch = crate::Launch {
             demo: None,
             theme: crate::theme::ThemeChoice::Dark,

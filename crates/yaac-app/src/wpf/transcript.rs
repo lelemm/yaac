@@ -693,7 +693,11 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
         let empty = if matches!(state.selection, Selection::None)
             && !yaac_core::first_run::is_first_run(state)
             && !matches!(state.hub.outcome, yaac_core::state::HelloOutcome::WindowOutdated { .. }) {
-            crate::shell::empty_workspace(app)
+            let text = crate::shell::empty_workspace(app);
+            // WPF's Retry for the hub in WSL is in Settings (P423).
+            #[cfg(feature = "hub")]
+            let text = if app.wsl_update_failed() { format!("{text} Retry in Settings → Advanced → Hub.") } else { text };
+            text
         } else {
             String::new()
         };

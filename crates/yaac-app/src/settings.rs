@@ -1716,6 +1716,18 @@ pub(crate) fn reclaim_offer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut 
     }
 }
 
+/// The hub in this PC's WSL could not be brought to this build (P423): why, and **Retry**.
+#[cfg(feature = "hub")]
+pub(crate) fn wsl_update_offer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(line) = app.wsl_update_line().filter(|_| app.wsl_update_failed()) else { return };
+    ui.add_space(6.0);
+    ui.label(RichText::new(line).font(theme::ui(size::SMALL)).color(p.needs));
+    if widgets::primary(ui, &p, "Retry", None).clicked() {
+        actions.push(Action::RetryHub);
+    }
+}
+
 /// Settings → Advanced → Hub → Transfer hub to….
 #[cfg(feature = "hub")]
 fn transfer_section(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
