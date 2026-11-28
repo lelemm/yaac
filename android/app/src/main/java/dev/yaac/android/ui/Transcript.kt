@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.DisableSelection
@@ -37,8 +38,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import dev.yaac.android.ui.transcript.peerHeaderRuns
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -162,13 +168,21 @@ private fun ProseRow(row: JsonObject, kind: String, state: RowState, submit: (Ac
     val tone = c.tone(row["tone"].text, if (kind in setOf("notice", "file", "mesh")) c.muted else c.text)
     Column(m.clickable(enabled = row["stamp"].text != null) { state.showStamp = !state.showStamp }) {
         row["taskPeer"].obj()?.let { peer ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 5.dp)) {
-                T(peer["heading"].text ?: "From", type.ui, c.muted)
-                Spacer(Modifier.width(6.dp))
-                val a = ActionItem.of(peer)
-                T(peer["label"].str, type.ui, weight = FontWeight.SemiBold, modifier = if (a?.enabled == true) Modifier.clickable { submit(a, false) } else Modifier)
-                peer["machine"].text?.let { T("  on $it", type.ui, c.muted) }
+            // One flowing text, so a long title and the target wrap at spaces together (never
+            // letter by letter in a leftover sliver); the title keeps to two lines.
+            val a = ActionItem.of(peer)
+            val runs = peerHeaderRuns(peer["heading"].text, peer["label"].str, peer["machine"].text)
+            val text = buildAnnotatedString {
+                for (r in runs) {
+                    if (r.name) withStyle(SpanStyle(color = c.text, fontWeight = FontWeight.SemiBold)) { append(r.text) }
+                    else withStyle(SpanStyle(color = c.muted)) { append(r.text) }
+                }
             }
+            BasicText(
+                text,
+                (if (a?.enabled == true) Modifier.clickable { submit(a, false) } else Modifier).padding(bottom = 5.dp),
+                style = type.ui, maxLines = 3, overflow = TextOverflow.Ellipsis,
+            )
         }
         row["title"].text?.takeIf { kind != "agent" && !task }?.let { T(it, type.ui, tone, weight = FontWeight.SemiBold) }
         // Touch and hold starts the transcript's selection, which runs across rows (T05, A11e).
