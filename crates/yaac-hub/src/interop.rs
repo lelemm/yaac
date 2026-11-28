@@ -16,6 +16,13 @@ use yaac_transport::{BoxFuture, ChildGuard, ConnectCtx, ConnectError, Connector,
 /// `yaac.exe local-daemon`.
 pub const LOCAL_DAEMON_COMMAND: &str = "local-daemon";
 
+/// `yaac hub-bridge`: standard streams to the hub's local socket.
+pub const HUB_BRIDGE_COMMAND: &str = "hub-bridge";
+
+/// How long `yaac hub-bridge` waits for the hub's socket to accept (the hub may be starting:
+/// right after a move, or when the keeper has just started it).
+pub const BRIDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Connects to this PC's Windows `yaacd` from inside WSL: `<exe> local-daemon`.
 #[derive(Clone, Debug)]
 pub struct InteropConnector {
@@ -81,4 +88,96 @@ pub fn serve_local_daemon(local: LocalConfig) -> Result<(), String> {
         drop(child);
         Ok(())
     })
+}
+
+/// `yaac hub-bridge`: connects to the hub's local socket (waiting up to `wait` for it to
+/// accept) and copies bytes between it and this process's standard streams until either side
+/// closes. The PC's window runs it through `wsl.exe` or `ssh` to reach a hub that moved there
+/// (docs/15-hub-transfer.md#the-pcs-window), so the hub sees an ordinary local attach: the
+/// socket is the user's own, as for every local client.
+#[cfg(unix)]
+pub fn serve_hub_bridge(socket: &std::path::Path, wait: std::time::Duration) -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build().map_err(|e| e.to_string())?;
+    rt.block_on(bridge(socket, wait, tokio::io::stdin(), tokio::io::stdout()))
+}
+
+/// [`serve_hub_bridge`] between any two streams.
+#[cfg(unix)]
+async fn bridge(
+    socket: &std::path::Path,
+    wait: std::time::Duration,
+    mut input: impl tokio::io::AsyncRead + Unpin,
+    mut output: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + wait;
+    let stream = loop {
+        match tokio::net::UnixStream::connect(socket).await {
+            Ok(s) => break s,
+            Err(e) if tokio::time::Instant::now() >= deadline => return Err(format!("no hub at {}: {e}", socket.display())),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+        }
+    };
+    let (mut reader, mut writer) = stream.into_split();
+    let up = async move {
+        let _ = tokio::io::copy(&mut input, &mut writer).await;
+        let _ = writer.shutdown().await;
+    };
+    let down = async move {
+        let _ = tokio::io::copy(&mut reader, &mut output).await;
+        let _ = output.flush().await;
+    };
+    // The hub closing ends it; the window closing only closes the hub's input.
+    tokio::pin!(down);
+    tokio::select! {
+        () = &mut down => {}
+        () = async { up.await; std::future::pending::<()>().await } => {}
+    }
+    Ok(())
+}
+
+/// Only a Linux hub is reached through a bridge.
+#[cfg(not(unix))]
+pub fn serve_hub_bridge(socket: &std::path::Path, wait: std::time::Duration) -> Result<(), String> {
+    let _ = (socket, wait);
+    Err("the hub bridge runs where the hub listens on a Unix socket".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt as _;
+
+    #[tokio::test]
+    async fn the_bridge_waits_for_the_hub_and_copies_both_ways() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hub.sock");
+        // The hub starts listening a moment after the bridge started.
+        let path = socket.clone();
+        let hub = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut got = [0u8; 5];
+            s.read_exact(&mut got).await.unwrap();
+            s.write_all(&[b'>', got[0], got[1], got[2], got[3], got[4]]).await.unwrap();
+            // The hub closes: the bridge ends.
+        });
+        let (mut window, window_end) = tokio::io::duplex(64);
+        let (window_in, window_out) = tokio::io::split(window_end);
+        window.write_all(b"hello").await.unwrap();
+        bridge(&socket, std::time::Duration::from_secs(5), window_in, window_out).await.unwrap();
+        hub.await.unwrap();
+        let mut back = Vec::new();
+        window.read_to_end(&mut back).await.unwrap();
+        assert_eq!(back, b">hello");
+    }
+
+    #[tokio::test]
+    async fn no_hub_is_a_plain_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, _b) = tokio::io::duplex(8);
+        let (i, o) = tokio::io::split(a);
+        let e = bridge(&dir.path().join("none.sock"), std::time::Duration::from_millis(300), i, o).await.unwrap_err();
+        assert!(e.starts_with("no hub at"), "{e}");
+    }
 }

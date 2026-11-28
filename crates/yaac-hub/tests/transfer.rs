@@ -189,7 +189,11 @@ fn every_target_is_listed_with_why_it_cannot_take_the_hub() {
         p["tailscale"]["login"] = json!("someone@else.com");
         h.probe = Some(p);
     });
-    assert!(reason(&candidates(&c), &x).unwrap().contains("another Tailscale login (someone@else.com)"));
+    // Another Tailscale login there: still eligible; the confirmation says who phones must be.
+    let r = candidates(&c);
+    assert_eq!(reason(&r, &x), None);
+    let row = r.candidates.iter().find(|c| c.target_id == x).unwrap();
+    assert_eq!(row.warning.as_deref(), Some("The hub will accept only devices signed in to Tailscale as someone@else.com; your phone must use that account."));
     s.x.hub_host(|h| {
         let mut p = support::fake_daemon::default_probe();
         p["hubRunning"] = json!(true);
@@ -299,6 +303,7 @@ fn the_hub_moves_and_lets_go_of_every_target_first() {
     assert_eq!(heard.moved.len(), 1);
     assert_eq!(heard.moved[0].address, "100.64.0.7:47380");
     assert_eq!(heard.moved[0].host_name, "x");
+    assert_eq!(json!(heard.moved[0].via), json!({ "kind": "ssh", "host": "x.example" }), "the PC's window follows over SSH");
     assert_eq!(json!(heard.moved[0].hub_id), hub_id);
     let tomb = yaac_hub::paths::moved_tombstone(&s.home.paths()).unwrap().expect("tombstone");
     assert_eq!((tomb.address.as_str(), tomb.host_name.as_str()), ("100.64.0.7:47380", "x"));
@@ -395,10 +400,10 @@ fn the_hub_moves_into_this_pcs_wsl() {
 
     let r = candidates(&c);
     assert_eq!(reason(&r, &w), None, "its own Tailscale node, same login");
-    assert_eq!(
-        reason(&r, &d).as_deref(),
-        Some("Tailscale is not running inside this WSL distro. Install it there (it needs its own machine on your tailnet).")
-    );
+    // Debian only sees Windows' Tailscale: eligible, but phones cannot reach a hub there.
+    assert_eq!(reason(&r, &d), None);
+    let row = r.candidates.iter().find(|c| c.target_id == d).unwrap();
+    assert_eq!(row.warning.as_deref(), Some("The phone can't reach the hub there until Tailscale runs on debian."));
     assert_eq!(reason(&r, &here_id).as_deref(), Some("This is the hub's own computer."));
 
     c.call(attach::names::TRANSFER_START, json!({ "opId": "op-w", "targetId": w })).unwrap();
@@ -418,6 +423,7 @@ fn the_hub_moves_into_this_pcs_wsl() {
     let tomb = yaac_hub::paths::moved_tombstone(&home.paths()).unwrap().expect("tombstone");
     assert_eq!(tomb.address, "100.64.0.9:47380", "the distro's own Tailscale address");
     assert_eq!(tomb.wsl_distro.as_deref(), Some("Ubuntu"));
+    assert_eq!(json!(tomb.via), json!({ "kind": "wsl", "distro": "Ubuntu", "user": "dev" }), "the window reaches it through wsl.exe");
 
     // The new hub's settings: the distro is its own computer, the other distro stays a WSL
     // target (wsl.exe through interop), and Windows is reached through yaac.exe.
@@ -435,4 +441,78 @@ fn the_hub_moves_into_this_pcs_wsl() {
     }
     wait_until("ubuntu closed", || !ubuntu.connected());
     assert!(!here.connected() && !debian.connected());
+}
+
+/// To this PC's Windows (docs/15-hub-transfer.md#to-this-pcs-windows), from a hub in its WSL:
+/// YAAC is installed there, so nothing is downloaded; Tailscale does not run there, and the
+/// move goes ahead anyway (phones wait for it); the window attaches over the local socket.
+#[test]
+fn the_hub_moves_to_this_pcs_windows_without_tailscale() {
+    let home = Home::new();
+    let windows = FakeDaemon::new("windows");
+    windows.set_features(vec![Capability::HubHost]);
+    let old = FakeDaemon::new("old");
+    old.set_features(vec![Capability::HubHost]);
+    for d in [&windows, &old] {
+        home.fakes.add(d);
+    }
+    let probe = |build: Option<&str>| {
+        let mut p = support::fake_daemon::default_probe();
+        p["os"] = json!("win32");
+        p["tailscale"] = json!({ "running": false, "ips": [] });
+        p["portFree"] = json!(false);
+        if let Some(b) = build {
+            p["hubBuild"] = json!(b);
+        }
+        p
+    };
+    windows.hub_host(|h| h.probe = Some(probe(None)));
+    let mut config = home.config();
+    config.build = HUB.into();
+    config.tailnet = Arc::new(FakeTailnet);
+    config.tailscale_port = 0;
+    // The Linux hub has no release lookup: Windows needs none.
+    config.transfer_host = None;
+    let hub = home.start_with(config);
+    let c = client(&hub, HUB);
+    let own = add(&c, "old", &json!({ "kind": "local" })).id;
+    let w = add(&c, "windows", &json!({ "kind": "windowsInterop", "exe": "/mnt/c/YAAC/yaac.exe" })).id;
+    for id in [&own, &w] {
+        c.wait_status(id, attach::ConnectionStatus::Connected);
+    }
+    assert_eq!(reason(&candidates(&c), &w).as_deref(), Some("Install YAAC on windows first."));
+    windows.hub_host(|h| h.probe = Some(probe(Some("0.1.0+1"))));
+    assert!(reason(&candidates(&c), &w).unwrap().contains("install the same build there first"));
+    windows.hub_host(|h| h.probe = Some(probe(Some(HUB))));
+    let r = candidates(&c);
+    assert_eq!(reason(&r, &w), None, "Tailscale never decides");
+    assert_eq!(r.candidates.iter().find(|c| c.target_id == w).unwrap().warning.as_deref(), Some("The phone can't reach the hub there until Tailscale runs on windows."));
+
+    c.call(attach::names::TRANSFER_START, json!({ "opId": "op-win", "targetId": w })).unwrap();
+    let mut heard = Heard::default();
+    let mut hub = hub;
+    assert_eq!(hub.join().reason, ExitReason::Moved);
+    heard.take(&c);
+    let calls: Vec<String> = windows.hub_host(|h| h.calls.iter().map(|(m, _)| m.clone()).collect());
+    assert!(!calls.contains(&names::HUB_HOST_INSTALL.to_owned()), "YAAC is installed there: {calls:?}");
+    let params = windows.hub_host(|h| h.calls.clone());
+    assert_eq!(params.last().unwrap().1, json!({ "opId": "op-win", "armOnClose": true, "startHub": true }));
+    assert!(!heard.phases().contains(&hub_transfer::INSTALLING));
+    assert_eq!(heard.moved.len(), 1);
+    assert_eq!(heard.moved[0].address, "", "phones cannot follow until Tailscale runs there");
+    assert_eq!(json!(heard.moved[0].via), json!({ "kind": "local" }), "the window attaches over the local socket");
+    let tomb = yaac_hub::paths::moved_tombstone(&home.paths()).unwrap().expect("tombstone");
+    assert_eq!(tomb.address, "");
+
+    let staged = windows.hub_host(|h| h.staged.clone());
+    let moved: Settings = serde_json::from_slice(&staged.iter().find(|(n, _)| n == "config/hub.json").unwrap().1).unwrap();
+    assert!(matches!(moved.target(&w).unwrap().transport, TargetTransport::Local(_)));
+    // This hub's own computer: its distro again when it runs in WSL, else out of reach.
+    let own_there = moved.target(&own).unwrap();
+    if yaac_hub::transfer::running_in_wsl() && std::env::var("WSL_DISTRO_NAME").is_ok_and(|d| !d.is_empty()) {
+        assert!(matches!(&own_there.transport, TargetTransport::Wsl(t) if Some(t.distro.clone()) == std::env::var("WSL_DISTRO_NAME").ok()));
+        assert!(own_there.enabled);
+    } else {
+        assert!(!own_there.enabled && own_there.extra.contains_key(UNREACHABLE_FIELD));
+    }
 }

@@ -809,9 +809,15 @@ impl DeskHubs {
     /// starts a hub that has moved.
     pub(crate) fn new(local: AttachConfig) -> Self {
         let mut saved = hubs::SavedHubs::load(&local.paths.config_dir);
-        let moved_here = yaac_hub::paths::moved_tombstone(&local.paths).ok().flatten();
-        if let Some(t) = &moved_here {
-            saved.moved(&t.hub_id, &t.address, &t.host_name);
+        let mut moved_here = yaac_hub::paths::moved_tombstone(&local.paths).ok().flatten();
+        if let Some(t) = &mut moved_here {
+            // A tombstone from before `via` (build 1059): a hub in WSL is still reached there.
+            if t.via.is_none()
+                && let Some(k) = crate::wsl_keeper::from_tombstone(&local.paths)
+            {
+                t.via = Some(yaac_protocol::attach::TargetTransport::Wsl(yaac_protocol::attach::WslTransport { distro: k.distro, user: k.user }));
+            }
+            saved.moved(&t.hub_id, &t.address, &t.host_name, t.via.as_ref());
         }
         Self { saved, local, moved_here, add_error: None, reclaiming: None }
     }
@@ -820,13 +826,24 @@ impl DeskHubs {
     #[cfg(test)]
     pub(crate) fn for_test(saved: hubs::SavedHubs) -> Self {
         let paths = yaac_hub::HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
-        let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None };
+        let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None, bridge: None };
         Self { saved, local, moved_here: None, add_error: None, reclaiming: None }
     }
 
     /// The attach configuration of the selected hub.
     pub(crate) fn config(&self) -> AttachConfig {
         let hub = self.saved.current();
+        // A hub that moved to one of this PC's targets: the way this PC reaches that target.
+        if let Some(bridge) = hub.bridge().and_then(|via| crate::attach::Bridge::to(via, &self.local.paths)) {
+            let dir: String = hub.key().chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+            let under = |p: &std::path::Path| p.join("remote-hubs").join(&dir);
+            let paths = yaac_hub::HubPaths {
+                config_dir: under(&self.local.paths.config_dir),
+                data_dir: under(&self.local.paths.data_dir),
+                runtime_dir: under(&self.local.paths.runtime_dir),
+            };
+            return AttachConfig::bridged(bridge, paths);
+        }
         match &hub.address {
             None => self.local.clone(),
             Some(address) => {
@@ -2033,13 +2050,16 @@ impl YaacApp {
             if !h.moved_followed && let Some(m) = self.client.state.hub.moved.clone() {
                 h.moved_followed = true;
                 let was_local = d.saved.current().is_local();
-                if d.saved.moved(&m.hub_id, &m.address, &m.host_name) {
-                    if was_local {
+                if d.saved.moved(&m.hub_id, &m.address, &m.host_name, m.via.as_ref()) {
+                    if d.saved.current().is_local() {
+                        // Back on this PC's Windows: nothing moved away from here any more.
+                        d.moved_here = None;
+                    } else if was_local {
                         let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| i64::try_from(t.as_millis()).unwrap_or(0));
                         // The old hub wrote its tombstone before it said so; it also says whether
                         // the hub went into this PC's WSL.
                         let written = yaac_hub::paths::moved_tombstone(&d.local.paths).ok().flatten().filter(|t| t.hub_id == m.hub_id);
-                        d.moved_here = Some(written.unwrap_or(yaac_hub::paths::MovedTombstone { hub_id: m.hub_id, address: m.address, host_name: m.host_name, at_ms, wsl_distro: None }));
+                        d.moved_here = Some(written.unwrap_or(yaac_hub::paths::MovedTombstone { hub_id: m.hub_id, address: m.address, host_name: m.host_name, at_ms, wsl_distro: None, via: m.via }));
                     }
                     self.attach_selected_hub();
                     return;

@@ -31,6 +31,8 @@ pub(crate) struct TransferChoice {
     pub label: String,
     pub eligible: bool,
     pub reason: Option<String>,
+    /// What phones will need there (Tailscale), from the hub.
+    pub warning: Option<String>,
 }
 
 /// Settings → Advanced → Hub → Transfer hub to….
@@ -57,24 +59,43 @@ pub(crate) struct TransferProgress {
     pub running: bool,
 }
 
-/// What the confirmation says before the hub moves to `to`. `into_wsl`: `to` is one of this
-/// PC's WSL distros (P414), from where this computer's targets stay reachable.
-pub(crate) fn confirm_text(to: &str, into_wsl: bool) -> (String, String) {
-    let reach = if into_wsl {
-        "This computer's other WSL distros and its own Windows target stay reachable from there. While the hub lives in WSL, \
-         a small YAAC process on Windows keeps the distro running and starts the hub there at login."
-    } else {
-        "WSL targets and this computer's own target can only be reached by a hub on this computer: \
-         they stay listed, unavailable, until the hub comes back."
-    };
-    (
-        format!("Move the hub to {to}?"),
-        format!(
+/// Where a picked destination is, for the confirmation's wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MoveKind {
+    /// Another machine (an SSH server).
+    Server,
+    /// One of this PC's WSL distros (P414).
+    IntoWsl,
+    /// This PC's own Windows.
+    ToWindows,
+}
+
+/// What the confirmation says before the hub moves to `to`. `warning`: what the hub says about
+/// phones there (no Tailscale, or another login), shown as is.
+pub(crate) fn confirm_text(to: &str, kind: MoveKind, warning: Option<&str>) -> (String, String) {
+    let body = match kind {
+        MoveKind::Server => format!(
             "YAAC installs itself on {to}, copies the hub's threads, drafts and messages there, and starts the hub there; \
-             the hub on this computer stops. Running turns keep going on their targets. Every window and phone attaches \
-             to the hub on {to}. {reach}"
+             the hub on this computer stops. Running turns keep going on their targets. This computer's window reaches the \
+             hub over SSH, the way it reached {to}. WSL targets and this computer's own target can only be reached by a hub \
+             on this computer: they stay listed, unavailable, until the hub comes back."
         ),
-    )
+        MoveKind::IntoWsl => format!(
+            "YAAC installs itself in {to}, copies the hub's threads, drafts and messages there, and starts the hub there; \
+             the hub on this computer stops. Running turns keep going on their targets. This computer's other WSL distros \
+             and its own Windows target stay reachable from there. While the hub lives in WSL, a small YAAC process on \
+             Windows keeps the distro running, starts the hub there at login, and connects this window to it."
+        ),
+        MoveKind::ToWindows => format!(
+            "The hub's threads, drafts and messages are copied to {to}, where YAAC is installed, and the hub starts there; \
+             the hub here stops. Running turns keep going on their targets. The window on that PC attaches to it directly."
+        ),
+    };
+    let body = match warning {
+        Some(w) => format!("{body}\n\n{w}"),
+        None => body,
+    };
+    (format!("Move the hub to {to}?"), body)
 }
 
 impl YaacApp {
@@ -157,9 +178,9 @@ impl YaacApp {
             None if hub.attached => Err("Looking for machines that can take the hub…".to_owned()),
             None => Err("Attach to the hub first.".to_owned()),
             Some(Err(e)) => Err(format!("The machines could not be listed: {e}")),
-            Some(Ok(list)) if list.is_empty() => Err("No targets. Add an SSH target on Linux first.".to_owned()),
+            Some(Ok(list)) if list.is_empty() => Err("No targets. Add a WSL distro or an SSH target first.".to_owned()),
             Some(Ok(list)) => Ok(list.iter().map(|c| TransferChoice {
-                target: c.target_id.clone(), label: c.label.clone(), eligible: c.eligible, reason: c.reason.clone(),
+                target: c.target_id.clone(), label: c.label.clone(), eligible: c.eligible, reason: c.reason.clone(), warning: c.warning.clone(),
             }).collect()),
         };
         let running = hub.transfer.as_ref().is_some_and(|t| t.phase.active());
@@ -181,8 +202,12 @@ impl YaacApp {
                 running: t.phase.active(),
             }
         });
-        let into_wsl = |t: &TargetId| self.client.state.target(t).is_some_and(|t| matches!(t.entry.transport, yaac_protocol::attach::TargetTransport::Wsl(_)));
-        let confirm = picked_choice.map(|c| confirm_text(&c.label, into_wsl(&c.target)));
+        let kind = |t: &TargetId| match self.client.state.target(t).map(|t| &t.entry.transport) {
+            Some(yaac_protocol::attach::TargetTransport::Wsl(_)) => MoveKind::IntoWsl,
+            Some(yaac_protocol::attach::TargetTransport::WindowsInterop(_)) => MoveKind::ToWindows,
+            _ => MoveKind::Server,
+        };
+        let confirm = picked_choice.map(|c| confirm_text(&c.label, kind(&c.target), c.warning.as_deref()));
         TransferView { choices, picked, can_start, progress, confirm }
     }
 
@@ -247,7 +272,7 @@ mod tests {
     }
 
     fn local(dir: &std::path::Path) -> AttachConfig {
-        AttachConfig { paths: yaac_hub::HubPaths::under(dir), exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_millis(200), remote: None }
+        AttachConfig { paths: yaac_hub::HubPaths::under(dir), exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_millis(200), remote: None, bridge: None }
     }
 
     fn window(config: AttachConfig) -> YaacApp {
@@ -293,7 +318,7 @@ mod tests {
         fake_hub(listener, json!({ "build": crate::BUILD, "targets": [], "hubId": "h-pc", "hostName": "box" }), vec![]);
         save_hubs(&config.paths.config_dir, json!({ "hubs": [{ "hubId": "h-pc", "hostName": "PC" }] }));
         std::fs::create_dir_all(&config.paths.data_dir).unwrap();
-        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None };
+        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None, via: None };
         yaac_hub::paths::write_moved_tombstone(&config.paths, &tombstone).unwrap();
 
         let mut app = window(config.clone());
@@ -317,7 +342,7 @@ mod tests {
         // Nothing listens there.
         let address = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
         std::fs::create_dir_all(&config.paths.data_dir).unwrap();
-        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None };
+        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None, via: None };
         yaac_hub::paths::write_moved_tombstone(&config.paths, &tombstone).unwrap();
         let mut app = window(config.clone());
         assert_eq!(attached_to(&app).as_deref(), Some(address.as_str()));

@@ -107,9 +107,32 @@ pub fn parse_keeper_args(args: &[String]) -> Result<WslKeeper, String> {
     Ok(keeper)
 }
 
-/// The hub's data directory inside the distro, as `yaacd` there finds it (`YAAC_DATA_DIR`,
-/// else `$XDG_DATA_HOME/yaac`, else `~/.local/share/yaac`), in `sh`.
+/// The hub's data directory on a Linux machine (a WSL distro, an SSH server), as `yaacd` there
+/// finds it (`YAAC_DATA_DIR`, else `$XDG_DATA_HOME/yaac`, else `~/.local/share/yaac`), in `sh`.
 const DISTRO_DATA_DIR: &str = r#"d="${YAAC_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/yaac}""#;
+
+/// The `sh` script that runs the moved hub's `yaac hub-bridge` on its machine: the PC's window
+/// reaches a hub that moved into WSL or onto an SSH server through it, without Tailscale.
+pub fn bridge_script() -> String {
+    format!(r#"{DISTRO_DATA_DIR}; exec "$d/bin/yaac" {}"#, crate::interop::HUB_BRIDGE_COMMAND)
+}
+
+/// What the PC's window runs after `wsl.exe` to reach a hub in that distro: `-d <distro> [-u
+/// <user>] --exec sh -c <bridge_script>`.
+pub fn wsl_bridge_argv(distro: &str, user: Option<&str>) -> Vec<String> {
+    let mut out = vec!["-d".to_owned(), distro.to_owned()];
+    if let Some(user) = user {
+        out.extend(["-u".into(), user.to_owned()]);
+    }
+    out.extend(["--exec".into(), "sh".into(), "-c".into(), bridge_script()]);
+    out
+}
+
+/// The remote command (one string, for the server's shell) that runs [`bridge_script`] over
+/// `ssh`.
+pub fn ssh_bridge_remote() -> String {
+    format!("exec sh -c '{}'", bridge_script().replace('\'', r"'\''"))
+}
 
 /// How long the first start waits for `yaacd` to place the moved hub's files, in seconds.
 pub const PLACED_WAIT_SECS: u32 = 120;
@@ -202,13 +225,26 @@ pub struct MovedFile {
     pub name: String,
 }
 
+/// Where the hub goes, for [`rewrite_settings`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination<'a> {
+    /// Another machine (an SSH server): this PC's WSL and Windows targets are unreachable there.
+    Remote,
+    /// One of this PC's WSL distros; this PC's `yaac.exe` as the distro sees it.
+    IntoWsl { interop_exe: &'a str },
+    /// This PC's Windows (a `windowsInterop` target, or a Windows target with YAAC installed).
+    /// `from_wsl`: this hub runs in that PC's WSL distro, which its new hub reaches as `wsl`.
+    ToWindows { from_wsl: Option<&'a str> },
+}
+
 /// The new hub's settings (P410), and YAAC's own files to copy with them.
 ///
 /// - `dest` becomes the new hub's local target, with the same id (its threads keep their keys).
-/// - `interop_exe`: `dest` is one of this PC's own WSL distros, and this is this PC's
-///   `yaac.exe` as the distro sees it. Then the other WSL targets stay as they are (`wsl.exe`
-///   runs from inside WSL), and this PC's local target becomes
-///   [`TargetTransport::WindowsInterop`] (`yaac.exe local-daemon`, through interop).
+/// - [`Destination::IntoWsl`]: the other WSL targets stay as they are (`wsl.exe` runs from
+///   inside WSL), and this PC's local target becomes [`TargetTransport::WindowsInterop`]
+///   (`yaac.exe local-daemon`, through interop).
+/// - [`Destination::ToWindows`]: WSL targets stay, this hub's own local target becomes the
+///   `wsl` target of its distro (when this hub runs in WSL; else it is unreachable).
 /// - Other SSH targets stay. One YAAC set up with its own key (and the key is here) keeps it:
 ///   the key is copied. One that used the user's own key or agent is marked
 ///   [`SIGN_IN_FIELD`]; the user's keys are never copied.
@@ -216,7 +252,12 @@ pub struct MovedFile {
 ///   stay, disabled, marked [`UNREACHABLE_FIELD`].
 /// - `hubId` and `clientId` are kept; attaching over Tailscale is turned on (every client is
 ///   remote now).
-pub fn rewrite_settings(settings: &Settings, dest: &TargetId, this_host: &str, ssh_dir: Option<&Path>, interop_exe: Option<&str>) -> (Settings, Vec<MovedFile>) {
+pub fn rewrite_settings(settings: &Settings, dest: &TargetId, this_host: &str, ssh_dir: Option<&Path>, to: &Destination<'_>) -> (Settings, Vec<MovedFile>) {
+    let interop_exe = match to {
+        Destination::IntoWsl { interop_exe } => Some(*interop_exe),
+        _ => None,
+    };
+    let to_windows = matches!(to, Destination::ToWindows { .. });
     let mut out = settings.clone();
     let mut files = Vec::new();
     for t in &mut out.targets {
@@ -248,6 +289,10 @@ pub fn rewrite_settings(settings: &Settings, dest: &TargetId, this_host: &str, s
             TargetTransport::Wsl(_) | TargetTransport::WindowsInterop(_) if interop_exe.is_some() => {}
             TargetTransport::Local(_) if let Some(exe) = interop_exe => {
                 t.transport = TargetTransport::WindowsInterop(WindowsInteropTransport { exe: exe.to_owned() });
+            }
+            TargetTransport::Wsl(_) if to_windows => {}
+            TargetTransport::Local(_) if let Destination::ToWindows { from_wsl: Some(distro) } = to => {
+                t.transport = TargetTransport::Wsl(yaac_protocol::attach::WslTransport { distro: (*distro).to_owned(), user: None });
             }
             TargetTransport::Wsl(_) | TargetTransport::Local(_) | TargetTransport::WindowsInterop(_) => {
                 t.enabled = false;
@@ -318,7 +363,7 @@ mod tests {
         std::fs::write(key_dir.join("id_ed25519.pub"), "public").unwrap();
         std::fs::write(ssh_dir.join("known_hosts"), "hosts").unwrap();
 
-        let (new, files) = rewrite_settings(&settings, &TargetId::new("x"), "my-pc", Some(&ssh_dir), None);
+        let (new, files) = rewrite_settings(&settings, &TargetId::new("x"), "my-pc", Some(&ssh_dir), &Destination::Remote);
         assert_eq!(new.hub_id.as_deref(), Some("h1"));
         assert!(new.hub.tailscale_attach);
         let t = |id: &str| new.targets.iter().find(|t| t.id.as_str() == id).unwrap();
@@ -345,7 +390,7 @@ mod tests {
             def("box", ssh("box")),
         ];
         let exe = "/mnt/c/Users/me/AppData/Local/Programs/YAAC/yaac.exe";
-        let (new, files) = rewrite_settings(&settings, &TargetId::new("ubuntu"), "my-pc", None, Some(exe));
+        let (new, files) = rewrite_settings(&settings, &TargetId::new("ubuntu"), "my-pc", None, &Destination::IntoWsl { interop_exe: exe });
         let t = |id: &str| new.targets.iter().find(|t| t.id.as_str() == id).unwrap();
         assert!(matches!(t("ubuntu").transport, TargetTransport::Local(_)), "the destination is the new hub's own");
         assert_eq!(t("local").transport, TargetTransport::WindowsInterop(WindowsInteropTransport { exe: exe.into() }));
@@ -357,6 +402,42 @@ mod tests {
         assert!(t("box").extra.contains_key(SIGN_IN_FIELD), "SSH is unchanged: no key of YAAC's here");
         assert!(files.is_empty());
         assert!(new.hub.tailscale_attach);
+    }
+
+    #[test]
+    fn back_to_this_pcs_windows_the_distro_becomes_a_wsl_target_again() {
+        let mut settings = Settings::first_run(false, true);
+        settings.targets = vec![
+            def("ubuntu", TargetTransport::Local(LocalTransport {})),
+            def("windows", TargetTransport::WindowsInterop(WindowsInteropTransport { exe: "/mnt/c/YAAC/yaac.exe".into() })),
+            def("debian", serde_json::from_value(serde_json::json!({ "kind": "wsl", "distro": "Debian" })).unwrap()),
+            def("box", ssh("box")),
+        ];
+        let (new, _) = rewrite_settings(&settings, &TargetId::new("windows"), "my-pc", None, &Destination::ToWindows { from_wsl: Some("Ubuntu") });
+        let t = |id: &str| new.targets.iter().find(|t| t.id.as_str() == id).unwrap();
+        assert!(matches!(t("windows").transport, TargetTransport::Local(_)), "Windows is the new hub's own");
+        assert_eq!(t("ubuntu").transport, TargetTransport::Wsl(yaac_protocol::attach::WslTransport { distro: "Ubuntu".into(), user: None }));
+        assert_eq!(t("debian").transport, settings.targets[2].transport);
+        for id in ["ubuntu", "windows", "debian", "box"] {
+            assert!(t(id).enabled && !t(id).extra.contains_key(UNREACHABLE_FIELD), "{id}");
+        }
+        // From an SSH server: its own local target is not reachable from Windows.
+        let (new, _) = rewrite_settings(&settings, &TargetId::new("windows"), "box", None, &Destination::ToWindows { from_wsl: None });
+        assert!(!new.targets[0].enabled && new.targets[0].extra.contains_key(UNREACHABLE_FIELD));
+    }
+
+    #[test]
+    fn the_pcs_window_reaches_a_moved_hub_through_its_bridge() {
+        let script = bridge_script();
+        assert!(script.ends_with(r#"exec "$d/bin/yaac" hub-bridge"#), "{script}");
+        assert_eq!(wsl_bridge_argv("Ubuntu", Some("dev"))[..7], ["-d", "Ubuntu", "-u", "dev", "--exec", "sh", "-c"]);
+        assert_eq!(wsl_bridge_argv("Ubuntu", None).last().unwrap(), &script);
+        // Over ssh the remote shell gets one string; the script survives its quoting.
+        let remote = ssh_bridge_remote();
+        let out = std::process::Command::new("sh").arg("-c").arg(remote.replace(r#"exec "$d/bin/yaac" hub-bridge"#, r#"echo "$d""#)).env("YAAC_DATA_DIR", "/x y").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/x y");
+        let out = std::process::Command::new("sh").arg("-c").arg(format!("printf %s {}", remote.strip_prefix("exec sh -c ").unwrap())).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), script, "single-quoted whole");
     }
 
     #[test]

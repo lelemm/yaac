@@ -1723,7 +1723,7 @@ fn transfer_section(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Acti
     let view = app.transfer_view();
     ui.add_space(10.0);
     ui.label(RichText::new("Transfer hub to…").font(theme::bold(size::UI)));
-    ui.label(widgets::secondary("Move the hub, with its threads, drafts and messages, to a Linux machine on your Tailscale network. Windows and phones follow it there.", &p));
+    ui.label(widgets::secondary("Move the hub, with its threads, drafts and messages, to one of your targets: a WSL distro, a Linux server over SSH, or this PC's Windows. This window follows it there; phones reach it over Tailscale.", &p));
     match &view.choices {
         Err(line) => {
             ui.label(widgets::secondary(line.as_str(), &p));

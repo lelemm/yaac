@@ -257,6 +257,18 @@ impl SshDefaults {
         t
     }
 
+    /// `ssh` arguments that run `remote` on a server as the hub would reach it: YAAC's own key
+    /// for it when that key is here (else the user's `ssh` defaults), YAAC's known hosts, never
+    /// a prompt. The PC's window runs `yaac hub-bridge` this way on a server the hub moved to.
+    pub fn command_args(&self, transport: &SshTransport, remote: &str) -> Vec<OsString> {
+        let ident = Ident::from_transport(transport);
+        let key = self.key(&ident);
+        let auth = if key.is_file() { yaac_transport::ssh::SshAuth::Key(&key) } else { yaac_transport::ssh::SshAuth::Default };
+        let mut args = self.target(&ident).args(auth);
+        args.push(remote.into());
+        args
+    }
+
     /// The `YAAC_HOME` the server's daemon uses, when moved (tests).
     pub(crate) fn target_home(&self) -> Option<&str> {
         self.env.iter().find(|(k, _)| k == "YAAC_HOME").map(|(_, v)| v.as_str())
