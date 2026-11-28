@@ -59,7 +59,8 @@ type Button = Extract<KnownNode, { type: "button" }>;
 
 export const registration = z.object({ name, description: z.string().max(1024).optional() });
 export const withdrawal = z.object({ requestId: id });
-const open = z.object({ requestId: id, title, layout: z.unknown(), threadId: z.string().min(1).max(256).optional() });
+const conversationId = z.string().max(256).refine(nonblank).nullish();
+const open = z.object({ requestId: id, title, layout: z.unknown(), threadId: conversationId, harnessSessionId: conversationId });
 const scalar = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
 const answer = z.object({
   requestKind: z.literal("dialog"),
@@ -196,6 +197,7 @@ function readLayout(raw: unknown): Layout {
 
 export function parseOpen(raw: unknown): DialogOpenParams {
   const params = parse(open, raw);
+  if (params.threadId && params.harnessSessionId) invalid("Provide either threadId or harnessSessionId.");
   const layout = readLayout(params.layout);
   const result = { ...params, layout: layout.node };
   if (Buffer.byteLength(JSON.stringify(result)) - layout.imageBytes > DIALOG_BYTES) limit("Dialog content may use at most 256 KiB excluding inline images.");

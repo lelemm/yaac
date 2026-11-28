@@ -422,8 +422,8 @@ export class Core {
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
     this.channels = new Channels(opts.home, {
-      thread: (id) => {
-        const rt = this.threads.get(id);
+      thread: (id, harnessSessionId) => {
+        const rt = id ? this.threads.get(id) : this.threadForDialog(harnessSessionId);
         return rt && !rt.deleted ? { id: rt.id, turnId: rt.activeTurn ?? "" } : undefined;
       },
       publishThread: (threadId, item, started) => {
@@ -3212,6 +3212,22 @@ export class Core {
     const id = this.byNative.get(instance, native, this.storeNow(instance));
     const rt = id ? this.threads.get(id) : undefined;
     return rt && !rt.deleted ? rt : undefined;
+  }
+
+  /** A hook knows the native conversation key but may not know its YAAC thread id. */
+  private threadForDialog(native: NativeId | undefined): ThreadRuntime | undefined {
+    if (!native) return undefined;
+    const live = (rt: ThreadRuntime) => Boolean(
+      rt.activeTurn || rt.dispatching || rt.compactDriver || rt.runningCommands.length || rt.record.subagent?.status === "running",
+    );
+    const matches = this.registry.all()
+      .map(({ config }) => this.threadByNative(config.id, native))
+      .filter((rt) => rt !== undefined);
+    matches.sort((a, b) =>
+      Number(live(b)) - Number(live(a)) ||
+      Date.parse(b.record.updatedAt) - Date.parse(a.record.updatedAt) ||
+      a.id.localeCompare(b.id));
+    return matches[0];
   }
 
   /** Journals an item yaacd itself produced (mesh items), through the provider-item path. */

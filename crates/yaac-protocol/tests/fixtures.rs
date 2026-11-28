@@ -53,6 +53,7 @@ fn question_request_item_from_the_docs() {
 fn dialog_layout_round_trips_with_runtime_choices_and_unknown_nodes() {
     let dialog: DialogOpenParams = exact(json!({
         "requestId": "local-1",
+        "harnessSessionId": "native-1",
         "title": "Choose a team",
         "layout": { "type": "column", "children": [
             { "type": "select", "id": "team", "label": "Team", "required": true,
@@ -65,6 +66,12 @@ fn dialog_layout_round_trips_with_runtime_choices_and_unknown_nodes() {
     assert!(matches!(&column.children[0], DialogNode::Select(select)
         if select.input.required == Some(true) && select.options[0].value == "dev"));
     assert!(matches!(&column.children[1], DialogNode::Unknown(node) if node.tag("type") == "newInput"));
+
+    assert_eq!(dialog.harness_session_id.as_deref(), Some("native-1"));
+    let opened: DialogOpenResult = exact(json!({ "accepted": true, "placement": "thread", "threadId": "yaac-thread" }));
+    assert_eq!(opened.placement, DialogPlacement::Thread);
+    let inbox: DialogOpenResult = exact(json!({ "accepted": true, "placement": "inbox" }));
+    assert!(inbox.thread_id.is_none());
 
     let params: InboxRespondParams = exact(json!({
         "opId": "op-a", "requestId": "dialog-a",

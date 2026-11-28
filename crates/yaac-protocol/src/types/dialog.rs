@@ -337,15 +337,31 @@ pub struct DialogOpenParams {
     pub request_id: RequestId,
     pub title: String,
     pub layout: DialogNode,
+    /// YAAC's thread ID. Mutually exclusive with `harness_session_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<ThreadId>,
+    /// The harness's conversation key. Mutually exclusive with `thread_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_session_id: Option<String>,
 }
 
-/// True once the dialog is durable.
+open_enum! {
+    /// Where the daemon placed an accepted dialog.
+    pub enum DialogPlacement fallback Unknown {
+        Thread = "thread",
+        Inbox = "inbox",
+    }
+}
+
+/// Acceptance and placement, returned after the dialog is durable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogOpenResult {
     pub accepted: bool,
+    pub placement: DialogPlacement,
+    /// YAAC's thread ID when placed in a thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
 }
 
 /// Withdraw the dialog identified by the integrator’s request ID.

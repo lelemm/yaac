@@ -8,10 +8,12 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { DialogOpenParams, DialogResultParams, InboxListResult, InboxUpdatedParams, RequestItem, ThreadReadResult } from "../src/protocol/generated/types.js";
+import type { DialogOpenParams, DialogOpenResult, DialogResultParams, InboxListResult, InboxUpdatedParams, RequestItem, ThreadReadResult, ThreadSyncResult } from "../src/protocol/generated/types.js";
+import { fakeProviderFactory } from "../src/providers/fake/index.js";
+import type { ProviderFactory } from "../src/providers/types.js";
 import { decodeMessage, type Message } from "../src/protocol/rpc.js";
 import { channelPathFor, connectDaemonSocket, listenChannels, socketPathFor } from "../src/session/server.js";
-import { opId, readAll, RpcFailure, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
+import { fakeOf, opId, readAll, RpcFailure, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
 
 class ChannelPeer {
   readonly received: Message[] = [];
@@ -61,9 +63,9 @@ async function connectHost(socketPath: string, id?: string): Promise<TestClient>
   return host;
 }
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, factories: ProviderFactory[] = []) {
   const home = tmpHome();
-  const daemon = await startDaemon(home);
+  const daemon = await startDaemon(home, { factories });
   t.after(async () => {
     await daemon.stop("test");
     fs.rmSync(home, { recursive: true, force: true });
@@ -144,7 +146,7 @@ test("one inbox answer wins, and only the channel receives its secret value", as
   await assert.rejects(peer.call("channel/register", { name: "Other name" }), failedWith("already_registered"));
   await assert.rejects(peer.call("thread/sync"), failedWith("method_not_found"));
   await until(() => host.notifications.find((n) => n.method === "channel/registered" && n.params.channelId === registration.channelId));
-  assert.deepEqual(await peer.call("dialog/open", { ...dialog("choice", "unknown-thread"), source: { name: "Forged" } }), { accepted: true });
+  assert.deepEqual(await peer.call("dialog/open", { ...dialog("choice", "unknown-thread"), source: { name: "Forged" } }), { accepted: true, placement: "inbox" });
   const inbox = await host.request<InboxListResult>("inbox/list");
   assert.deepEqual(inbox.channels, [{ ...registration, name: "Deployment", description: "Test integrator" }]);
   const request = inbox.requests[0]!;
@@ -175,6 +177,50 @@ test("one inbox answer wins, and only the channel receives its secret value", as
   assert.equal(JSON.stringify(other.messages).includes(SECRET), false);
 });
 
+test("a Claude hook's native session ID resolves through the provider instance index", async (t) => {
+  const sessionId = "39ad2293-4171-49cc-90d5-dd939f62de5a";
+  const claude: ProviderFactory = {
+    kind: "claude",
+    implicit: () => true,
+    create(ctx) {
+      const provider = fakeProviderFactory.create(ctx);
+      const updatedAt = new Date(Date.now() - (ctx.config.implicit ? 2000 : 1000)).toISOString();
+      provider.scanThreads = async () => ({
+        threads: [{ native: sessionId, cwd: ctx.home, createdAt: updatedAt, updatedAt, originKind: "interactive" }],
+      });
+      return provider;
+    },
+  };
+  const { daemon, host } = await setup(t, [claude]);
+  const added = await host.request<{ instance: { id: string } }>("providerInstance/add", {
+    opId: opId(), kind: "claude", enabled: true, backend: "auto", name: "Second store",
+  });
+  await host.request("provider/refresh", { instance: added.instance.id });
+  const { changed = [] } = await host.request<ThreadSyncResult>("thread/sync");
+  const threads = changed.filter((thread) => thread.nativeId === sessionId);
+  assert.equal(threads.length, 2);
+  const recent = threads.find((thread) => thread.instance === added.instance.id)!;
+  const older = threads.find((thread) => thread.instance !== added.instance.id)!;
+  assert.notEqual(recent.id, sessionId, "the hook ID is not the YAAC thread ID");
+
+  const { peer } = await direct(channelPathFor(daemon.config.home));
+  await peer.call("channel/register", { name: "Claude hook" });
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("recent"), harnessSessionId: sessionId }), {
+    accepted: true, placement: "thread", threadId: recent.id,
+  });
+  fakeOf(daemon, older.instance).events.emit({ type: "turnStarted", thread: sessionId, turnId: "live-hook-turn" });
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("live"), harnessSessionId: sessionId }), {
+    accepted: true, placement: "thread", threadId: older.id,
+  });
+  const live = await host.request<ThreadReadResult>("thread/read", { threadId: older.id, maxItems: 1 });
+  assert.ok(live.items.some((item) => item.kind === "request" && item.requestKind === "dialog" && item.turnId === "live-hook-turn"));
+  await assert.rejects(peer.call("dialog/open", { ...dialog("both", recent.id), harnessSessionId: sessionId }), /either threadId or harnessSessionId/);
+  assert.deepEqual(await peer.call<DialogOpenResult>("dialog/open", { ...dialog("unknown"), harnessSessionId: "unknown-session" }), {
+    accepted: true, placement: "inbox",
+  });
+  assert.equal((await host.request<InboxListResult>("inbox/list")).requests.length, 1);
+});
+
 test("thread dialogs use the journal and survive a daemon restart with the original channel closed", async (t) => {
   const { home, daemon, host } = await setup(t);
   const { threadId, turnId } = await startThread(host, "/fake say Ready");
@@ -182,7 +228,9 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
   await waitTurnDone(host, threadId, turnId);
   const { peer } = await direct(channelPathFor(daemon.config.home));
   await peer.call("channel/register", { name: "Deployment" });
-  await peer.call("dialog/open", dialog("withdrawn", threadId));
+  assert.deepEqual(await peer.call("dialog/open", dialog("withdrawn", threadId)), {
+    accepted: true, placement: "thread", threadId,
+  });
   const started = await host.waitEvent((msg) => msg.event.type === "itemStarted" && msg.event.item.kind === "request" && msg.event.item.requestKind === "dialog");
   assert.equal(started.event.type, "itemStarted");
   assert.equal(started.event.item.kind, "request");

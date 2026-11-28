@@ -7,6 +7,7 @@ import * as path from "node:path";
 import type { Socket } from "node:net";
 import type {
   ChannelRegisteredParams,
+  DialogOpenResult,
   DialogResultParams,
   InboxListResult,
   Item,
@@ -34,7 +35,7 @@ interface Channel {
 }
 
 interface ChannelHooks {
-  thread(id: string): { id: string; turnId: string } | undefined;
+  thread(id?: string, harnessSessionId?: string): { id: string; turnId: string } | undefined;
   publishThread(threadId: string, item: Item, started: boolean): void;
   broadcast(method: string, params: unknown): void;
   activity(): void;
@@ -201,11 +202,11 @@ export class Channels {
     return channel;
   }
 
-  private open(channel: Channel, raw: unknown): { accepted: true } {
+  private open(channel: Channel, raw: unknown): DialogOpenResult {
     const { requestId: integratorId } = parse(withdrawal, raw);
     if (channel.seen.has(integratorId)) throw new RpcError("duplicate_request", "This requestId was already used on this channel.");
     const params = parseOpen(raw);
-    const thread = params.threadId ? this.hooks.thread(params.threadId) : undefined;
+    const thread = this.hooks.thread(params.threadId ?? undefined, params.harnessSessionId ?? undefined);
     const requestId = randomId(REQUEST_PREFIX, 16);
     const record: DialogRecord = {
       integratorId: params.requestId,
@@ -227,7 +228,9 @@ export class Channels {
     };
     // Once the record is published the integrator ID is consumed, even if its reply is lost.
     this.store(record, true, () => channel.seen.set(integratorId, requestId));
-    return { accepted: true };
+    return thread
+      ? { accepted: true, placement: "thread", threadId: thread.id }
+      : { accepted: true, placement: "inbox" };
   }
 
   private withdraw(channel: Channel, raw: unknown): object {

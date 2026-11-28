@@ -45,16 +45,27 @@ See [the example integrator](../examples/dialog-demo.mjs) for a runtime-defined 
 - **`channel/register { name, description? }`** → `{ channelId }`. The name is shown to the user as
   the dialog's source ("From <name> on <target>"). One channel per connection; it ends when the
   connection closes.
-- **`dialog/open { requestId, title, layout, threadId? }`** →
-  `{ accepted: true }` once `yaacd` has journaled it (invariant 8). The integrator supplies
-  `requestId` as the operation ID, unique within its channel. A repeated ID is refused with
-  `duplicate_request`. A known `threadId` places the dialog in that thread and in Needs you.
-  Otherwise the dialog appears under the target in Needs you.
+- **`dialog/open { requestId, title, layout, threadId?, harnessSessionId? }`** →
+  `{ accepted: true, placement: "thread" | "inbox", threadId? }` after journaling (invariant 8).
+  The integrator supplies `requestId` as the operation ID, unique within its channel. A repeated
+  ID is refused with `duplicate_request`. Supply either `threadId` or `harnessSessionId`, or
+  omit both. If the daemon resolves a thread, the result gives its YAAC thread ID and the
+  dialog appears in that thread and in Needs you. Otherwise it appears under the target in
+  Needs you and the result has `placement: "inbox"`.
 - **Notification `dialog/result { requestId, outcome, action?, values? }`** to the channel:
   `answered` carries the button ID in `action` and the input values keyed by ID in `values`.
   The other outcomes are `cancelled` and `unknown` (see below).
 - **`dialog/close { requestId }`**: the integrator withdraws a dialog it no longer needs; the UIs
   drop it and the result is `cancelled` (once).
+
+### From a harness hook
+
+For a Claude Code command hook, read the JSON on stdin and pass its `session_id` as
+`harnessSessionId` (verified against the installed Claude Code 2.1.332). For Codex pass the
+conversation's `Thread.id`. If the integrator already has the YAAC thread ID, it can send
+`threadId` instead. When the same native key is known in several provider instances, the
+daemon prefers a live thread, then the most recently updated one.
+[Claude Code hook input fields](https://code.claude.com/docs/en/hooks#common-input-fields).
 
 ## Runtime layout (P420)
 
@@ -97,7 +108,7 @@ within the protocol's message limit.
 ## How it travels (P418)
 
 - **`yaacd`** turns `dialog/open` into an ordinary **request** with a new body kind **`dialog`**
-  (`RequestBody::Dialog`), raised on the thread when `threadId` is given and known, else on a
+  (`RequestBody::Dialog`), raised on the resolved thread when either supplied ID is known, else on a
   target-level **inbox** (a pseudo-scope the hub lists under Needs you). It is journaled before it
   is acknowledged, survives the host being away, and is never auto-answered or timed out
   (invariant 8). The request carries `source: { channelId, name }` so every UI says where it comes

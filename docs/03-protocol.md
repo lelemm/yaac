@@ -264,7 +264,7 @@ JSON-RPC messages and the same string error codes as the daemon protocol.
 | Direction | Method | Payload and result |
 | --- | --- | --- |
 | Integrator → daemon | `channel/register` | `{ name, description? }` → `{ channelId }`. Once per connection. |
-| Integrator → daemon | `dialog/open` | `{ requestId, title, layout, threadId? }` → `{ accepted: true }` after journaling. The request ID is unique on that channel. |
+| Integrator → daemon | `dialog/open` | `{ requestId, title, layout, threadId?, harnessSessionId? }` → `{ accepted: true, placement, threadId? }` after journaling. Supply at most one conversation ID. The request ID is unique on that channel. |
 | Integrator → daemon | `dialog/close` | `{ requestId }` → `{}`. Withdraws an open dialog and emits its cancellation. |
 | Daemon → integrator | `dialog/result` | Notification `{ requestId, outcome, action?, values? }`. Only the opening channel receives it. |
 | Hub → daemon | `inbox/list` | `{}` → `{ requests, channels }`. Snapshot of the target's pending threadless dialogs and registered channels. |

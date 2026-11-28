@@ -1230,17 +1230,29 @@ export interface DialogNumber {
  * The request id is unique on the channel and is the integrator operation id.
  */
 export interface DialogOpenParams {
+  /**
+   * The harness's conversation key. Mutually exclusive with `thread_id`.
+   */
+  harnessSessionId?: string | null;
   layout: DialogNode;
   requestId: RequestId;
+  /**
+   * YAAC's thread ID. Mutually exclusive with `harness_session_id`.
+   */
   threadId?: ThreadId | null;
   title: string;
 }
 
 /**
- * True once the dialog is durable.
+ * Acceptance and placement, returned after the dialog is durable.
  */
 export interface DialogOpenResult {
   accepted: boolean;
+  placement: DialogPlacement;
+  /**
+   * YAAC's thread ID when placed in a thread.
+   */
+  threadId?: ThreadId | null;
 }
 
 /**
@@ -1258,6 +1270,13 @@ export interface DialogOption {
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type DialogOutcome = "answered" | "cancelled" | "unknown";
+
+/**
+ * Where the daemon placed an accepted dialog.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogPlacement = "thread" | "inbox";
 
 /**
  * Progress from 0 to 1, or indeterminate when absent.
