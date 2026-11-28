@@ -138,6 +138,22 @@ test("probe reports Tailscale, port and newest recorded transfer", linuxTest, as
   assert.equal(occupied.hubRunning, true);
 });
 
+test("the probe never listens on a port (Windows Firewall would ask about Node)", linuxTest, async (t) => {
+  const { client } = await fixture(t, {});
+  const listen = net.Server.prototype.listen;
+  let listens = 0;
+  net.Server.prototype.listen = function (this: net.Server, ...args: unknown[]) {
+    listens++;
+    return (listen as (...a: unknown[]) => net.Server).apply(this, args);
+  } as typeof listen;
+  try {
+    await client.request("hubHost/probe");
+  } finally {
+    net.Server.prototype.listen = listen;
+  }
+  assert.equal(listens, 0);
+});
+
 test("a named WSL distro probes its own Tailscale", linuxTest, async (t) => {
   const { client } = await fixture(t, { wslDistro: "YAAC Test" });
   const probe = await client.request("hubHost/probe");

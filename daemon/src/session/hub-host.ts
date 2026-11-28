@@ -71,11 +71,18 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function canBind(host: string, port: number): Promise<boolean> {
+/**
+ * Whether nothing answers on `host:port`. Only connects, never listens: listening on a network
+ * address makes Windows Firewall ask the user about Node (seen when merely listing transfer
+ * targets), and in WSL with mirrored networking it would reserve the port on Windows too.
+ */
+function nothingListening(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
   return new Promise((resolve) => {
-    const server = net.createServer((socket) => socket.destroy());
-    server.once("error", () => resolve(false));
-    server.listen({ host, port, exclusive: true }, () => server.close((error) => resolve(!error)));
+    const socket = net.connect({ host, port });
+    const done = (free: boolean) => { socket.destroy(); resolve(free); };
+    socket.setTimeout(timeoutMs, () => done(true));
+    socket.once("connect", () => done(false));
+    socket.once("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNREFUSED" || e.code === "EHOSTUNREACH" || e.code === "ENETUNREACH" || e.code === "EADDRNOTAVAIL" || e.code === "ETIMEDOUT"));
   });
 }
 
@@ -124,7 +131,7 @@ export class HubHost {
       this.linuxPaths ? this.linuxHubRunning(this.linuxPaths) : false,
     ]);
     const port = this.options.probePortForTests ?? PORT;
-    const portFree = tailscale.ips.length > 0 && (await Promise.all(tailscale.ips.map((ip) => canBind(ip, port)))).every(Boolean);
+    const portFree = tailscale.ips.length > 0 && (await Promise.all(tailscale.ips.map((ip) => nothingListening(ip, port)))).every(Boolean);
     const interop = this.options.wslInteropPathForTests ?? WSL_INTEROP_MARKER;
     const distro = this.linuxPaths && (this.env.WSL_DISTRO_NAME?.trim() || (fs.existsSync(interop) ? "WSL" : undefined));
     const paths = hubInfo?.paths ?? this.linuxPaths;
