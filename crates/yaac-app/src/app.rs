@@ -2198,6 +2198,24 @@ impl YaacApp {
         }
     }
 
+    /// Drafts go to the hub's store at a calm pace, not on every key. What the client hands
+    /// out for this device's file goes there in the same frame, whatever produced it: a
+    /// message accepted forgets its stored draft without any edit to flush, and that must be
+    /// on disk before the app can be stopped or start again (a sent message never comes back).
+    pub(crate) fn drafts_upkeep(&mut self, ctx: &egui::Context, t: f64) {
+        if self.client.drafts_dirty() {
+            if t - self.drafts_flushed >= 1.0 {
+                self.client.flush_drafts();
+                self.drafts_flushed = t;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - (t - self.drafts_flushed)));
+            }
+        }
+        if self.client.device_drafts_pending() {
+            self.keep_device_drafts(false);
+        }
+    }
+
     /// Drafts this device keeps (P393): what the client changed goes to the file, now when
     /// `now` (the controller is stopping), otherwise off this thread.
     pub(crate) fn keep_device_drafts(&mut self, now: bool) {
@@ -2471,16 +2489,7 @@ impl YaacApp {
         let files_changed = self.pump_files();
         self.artifacts.pump(ctx, &mut self.client, &mut self.browsers);
         self.images.pump(&mut self.client);
-        // Drafts go to the hub's store at a calm pace, not on every key.
-        if self.client.drafts_dirty() {
-            if t - self.drafts_flushed >= 1.0 {
-                self.client.flush_drafts();
-                self.keep_device_drafts(false);
-                self.drafts_flushed = t;
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - (t - self.drafts_flushed)));
-            }
-        }
+        self.drafts_upkeep(ctx, t);
         // The offset changes with daylight saving: look again once a minute (only when a
         // frame happens anyway).
         if t - self.zone_checked > 60.0 || self.zone_checked == 0.0 {
@@ -2893,6 +2902,82 @@ pub(crate) mod tests {
         let sets = hub.join().unwrap();
         assert_eq!(sets, vec![(json!(keys::THEME), app.ui.prefs().value(keys::THEME))]);
         assert_ne!(app.ui.prefs().value(keys::THEME), json!("dark"));
+    }
+
+    /// A demo window that keeps its drafts on the device, in `dir` (as the phone does, P393).
+    #[cfg(feature = "hub")]
+    fn device_drafts_app(ctx: &egui::Context, dir: &std::path::Path) -> YaacApp {
+        let mut app = demo_app(ctx);
+        // Nothing listens there: only the connection's device draft store is used.
+        let config = AttachConfig::remote("127.0.0.1:9".into(), yaac_hub::HubPaths::under(dir));
+        let (conn, _, _) = connect_hub(config, ctx);
+        let stored = conn.device_drafts.as_ref().unwrap().stored();
+        app.hub = Some(conn);
+        app.client.keep_drafts_on_device(stored);
+        app
+    }
+
+    /// What `drafts.json` holds once the writer is done, as a killed app leaves it (Android
+    /// stops the process without the controller's last write): key → text.
+    #[cfg(feature = "hub")]
+    fn device_file(app: &mut YaacApp, dir: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+        app.hub.as_mut().unwrap().device_drafts.as_mut().unwrap().absorb_now(Vec::new());
+        let paths = yaac_hub::HubPaths::under(dir);
+        crate::device_drafts::DeviceDrafts::open(&paths.data_dir).stored().into_iter()
+            .map(|v| (v["key"].as_str().unwrap().to_owned(), v["text"].as_str().unwrap_or_default().to_owned()))
+            .collect()
+    }
+
+    /// The bug seen on the phone: a long message was sent and accepted, and after the app came
+    /// back it was in the composer again, ready to be sent twice. The stored draft must go
+    /// when the message is accepted, without waiting for another edit or a clean stop; what
+    /// was typed and not sent, before or during an outage, must stay.
+    #[cfg(feature = "hub")]
+    #[test]
+    fn a_sent_message_never_comes_back_from_the_device_drafts() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = device_drafts_app(&ctx, dir.path());
+        let sent = threads::fix();
+        let kept = threads::parser();
+        let (sent_key, kept_key) = (DraftRef::Thread(sent.clone()).store_key(), DraftRef::Thread(kept.clone()).store_key());
+        app.client.open(&sent);
+        app.pump_demo();
+        let long = format!("# Plan\n\n```md\n````rust\nfn main() {{}}\n````\n```\n{}", "x".repeat(12 * 1024));
+        for (key, text) in [(&sent, long.as_str()), (&kept, "half a thought")] {
+            app.client.state.drafts.entry(key.clone()).or_default().text = text.to_owned();
+            app.apply(vec![Action::DraftEdited(DraftRef::Thread(key.clone()))]);
+        }
+        app.drafts_upkeep(&ctx, 10.0);
+        let file = device_file(&mut app, dir.path());
+        assert_eq!(file.get(&sent_key).map(String::len), Some(long.len()));
+        assert_eq!(file.get(&kept_key).map(String::as_str), Some("half a thought"));
+
+        // Sent well after the last key, and accepted.
+        app.apply(vec![Action::Send(sent.clone())]);
+        for _ in 0..100 {
+            app.pump_demo();
+            if !app.demo.as_ref().unwrap().tick() { break; }
+        }
+        assert!(app.client.state.drafts.get(&sent).is_none_or(|d| d.is_empty()));
+        assert!(app.client.state.transcripts[&sent].pending().iter().all(|p| p.state == yaac_core::sending::SendState::Sent), "the send was accepted");
+        app.drafts_upkeep(&ctx, 60.0);
+        let file = device_file(&mut app, dir.path());
+        assert!(!file.contains_key(&sent_key), "the sent message is still stored: {:?}", file.keys());
+        assert_eq!(file.get(&kept_key).map(String::as_str), Some("half a thought"));
+
+        // The link drops; what is typed meanwhile is kept too.
+        app.client.connection_lost();
+        app.client.state.drafts.get_mut(&kept).unwrap().text.push_str(", finished offline");
+        app.apply(vec![Action::DraftEdited(DraftRef::Thread(kept.clone()))]);
+        app.drafts_upkeep(&ctx, 70.0);
+        let file = device_file(&mut app, dir.path());
+        assert_eq!(file.get(&kept_key).map(String::as_str), Some("half a thought, finished offline"));
+
+        // The app comes back: the sent message does not, the unsent one does.
+        let again = device_drafts_app(&ctx, dir.path());
+        assert!(again.client.state.drafts.get(&sent).is_none_or(|d| d.text.is_empty()));
+        assert_eq!(again.client.state.drafts[&kept].text, "half a thought, finished offline");
     }
 
     pub(crate) fn worker_mode_dialog(ctx: &egui::Context) -> YaacApp {
