@@ -32,6 +32,8 @@ mod ssh_hub;
 mod device_drafts;
 #[cfg(feature = "hub")]
 pub mod wsl_service;
+#[cfg(feature = "hub")]
+mod wsl_update;
 
 mod agents_ui;
 mod app_icon;
@@ -282,8 +284,18 @@ fn run_window(args: &[String]) -> ExitCode {
     let updates = attach.as_ref().filter(|_| updater::ENABLED && shots.is_none()).map(|c| c.paths.data_dir.join("updates"));
     #[cfg(not(feature = "hub"))]
     let updates: Option<std::path::PathBuf> = None;
+    // This PC's hub in WSL holds yaac.exe (its `local-daemon`): it is stopped first (P423).
+    #[cfg(feature = "hub")]
+    let hub_paths = attach.as_ref().map(|c| c.paths.clone());
+    let before_install = || -> Result<(), String> {
+        #[cfg(feature = "hub")]
+        if let Some(paths) = &hub_paths {
+            return wsl_update::before_install(paths, BUILD);
+        }
+        Ok(())
+    };
     let updater = match updates {
-        Some(dir) => match updater::at_start(&dir, BUILD) {
+        Some(dir) => match updater::at_start(&dir, BUILD, before_install) {
             updater::AtStart::Exit => return ExitCode::SUCCESS,
             updater::AtStart::Continue(notice) => updater::Updater::new(updater::Config::github(dir), BUILD, notice),
         },

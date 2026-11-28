@@ -242,6 +242,10 @@ fn local_daemon(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
+    // Held while this process runs: the window's updater waits for every one of this install to
+    // be gone before its installer replaces yaac.exe (P423).
+    #[cfg(windows)]
+    let _running = std::env::current_exe().ok().and_then(|exe| yaac_winsys::listen_named_event(&yaac_hub::interop::local_daemon_event(&exe)).ok());
     match yaac_hub::interop::serve_local_daemon(yaac_hub::config::local_config(&paths)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

@@ -256,10 +256,7 @@ impl HubTransfer {
 #[cfg(feature = "hub")]
 impl yaac_hub::transfer::TransferHost for HubTransfer {
     fn hub_asset(&self, build: &str, arch: &str) -> Result<yaac_hub::transfer::HubAsset, String> {
-        let found = find_build(&self.cfg, build)?;
-        let name = yaac_hub::transfer::hub_asset_name(arch);
-        let asset = found.manifest.asset(&name).ok_or_else(|| format!("YAAC {build} has no hub for {arch} ({name} is not in its release)."))?;
-        Ok(yaac_hub::transfer::HubAsset { url: asset.url.clone(), sha256: asset.sha256.clone(), size: asset.size })
+        hub_asset(&self.cfg, build, arch)
     }
 
     fn stop_autostart(&self) -> Result<(), String> {
@@ -282,6 +279,45 @@ impl yaac_hub::transfer::TransferHost for HubTransfer {
             return Err("only YAAC for Windows sets up a hub in WSL".into());
         }
         crate::wsl_service::start_install(service)
+    }
+}
+
+/// The Linux hub binary of exactly `build` for `arch`, as the release manifest of that build lists
+/// it: what a transfer hands to `yaacd` on the new machine, and what the window puts into this
+/// PC's WSL after an update (P423). An error is a sentence for the user.
+#[cfg(feature = "hub")]
+pub(crate) fn hub_asset(cfg: &Config, build: &str, arch: &str) -> Result<yaac_hub::transfer::HubAsset, String> {
+    let found = find_build(cfg, build)?;
+    let name = yaac_hub::transfer::hub_asset_name(arch);
+    let asset = found.manifest.asset(&name).ok_or_else(|| format!("YAAC {build} has no hub for {arch} ({name} is not in its release)."))?;
+    Ok(yaac_hub::transfer::HubAsset { url: asset.url.clone(), sha256: asset.sha256.clone(), size: asset.size })
+}
+
+/// Downloads the Linux hub of exactly `build` for `arch` ([`hub_asset`]) into `dir` (emptied
+/// first), checking its size and SHA-256 as it comes in. Returns the verified file and what it
+/// was checked against. Blocking: run it on a worker.
+#[cfg(feature = "hub")]
+pub(crate) fn download_hub(cfg: &Config, build: &str, arch: &str, dir: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<(PathBuf, yaac_hub::transfer::HubAsset), String> {
+    let asset = hub_asset(cfg, build, arch)?;
+    if cfg.https_only && !asset.url.starts_with("https://") {
+        return Err("the hub's address is not HTTPS".into());
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let name = yaac_hub::transfer::hub_asset_name(arch);
+    let (path, part) = (dir.join(&name), dir.join(format!("{name}.part")));
+    let result = fetch(cfg, &asset.url, asset.size, &part, progress).and_then(|sha256| {
+        if sha256 != asset.sha256 {
+            return Err("the download does not match the release's SHA-256".into());
+        }
+        std::fs::rename(&part, &path).map_err(|e| e.to_string())
+    });
+    match result {
+        Ok(()) => Ok((path, asset)),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(dir);
+            Err(e)
+        }
     }
 }
 
@@ -483,8 +519,10 @@ pub(crate) enum AtStart {
 }
 
 /// Run before the window opens: installs a verified pending update for a newer build instead
-/// of starting, and cleans up one that is spent, older, or not intact.
-pub(crate) fn at_start(dir: &Path, running: &str) -> AtStart {
+/// of starting, and cleans up one that is spent, older, or not intact. `before_install` runs
+/// first (this PC's hub in WSL is stopped, P423); when it fails the installer is not run, the
+/// update stays downloaded, and why is said.
+pub(crate) fn at_start(dir: &Path, running: &str, before_install: impl FnOnce() -> Result<(), String>) -> AtStart {
     match decide_start(running, read_pending(dir), verify) {
         StartDecision::Start => AtStart::Continue(None),
         StartDecision::Discard(why) => {
@@ -496,13 +534,21 @@ pub(crate) fn at_start(dir: &Path, running: &str) -> AtStart {
             discard(dir);
             AtStart::Continue(Some(format!("{msg} The installer's log is {}.", dir.join(INSTALL_LOG).display())))
         }
-        StartDecision::Install(p) => match run_installer(dir, &p) {
-            Ok(()) => AtStart::Exit,
-            Err(e) => {
-                discard(dir);
-                AtStart::Continue(Some(format!("The update to YAAC {} could not be installed: {e}", p.version)))
-            }
+        StartDecision::Install(p) => match before_install() {
+            // Kept, not attempted: "Restart to update" offers it again.
+            Err(e) => AtStart::Continue(Some(format!("The update to YAAC {} was not installed: {e}", p.version))),
+            Ok(()) => install_at_start(dir, &p),
         },
+    }
+}
+
+fn install_at_start(dir: &Path, p: &Pending) -> AtStart {
+    match run_installer(dir, p) {
+        Ok(()) => AtStart::Exit,
+        Err(e) => {
+            discard(dir);
+            AtStart::Continue(Some(format!("The update to YAAC {} could not be installed: {e}", p.version)))
+        }
     }
 }
 
@@ -519,6 +565,9 @@ pub(crate) enum Phase {
     Downloading { found: Found, done: u64, total: u64 },
     /// Verified and waiting: "Restart to update".
     Ready(Pending),
+    /// "Restart to update" was clicked and this PC's hub in WSL is being stopped first (P423);
+    /// the installer runs once it has.
+    StoppingHub { pending: Pending, label: String },
     /// The download failed; clicking tries again.
     Failed { found: Found, message: String },
 }
@@ -546,6 +595,7 @@ impl Phase {
                 (format!("Downloading YAAC {} · {percent}%", found.manifest.label()), None, progress)
             }
             Self::Ready(pending) => (format!("YAAC {} is downloaded · Restart to update", pending.version), Some(CaptionAction::Install), 0.0),
+            Self::StoppingHub { pending, label } => (format!("Stopping the hub in {label} to install YAAC {}…", pending.version), None, 0.0),
             Self::Failed { found, message } => (format!("The download of YAAC {} failed: {message} · Try again", found.manifest.label()), Some(CaptionAction::Download), 0.0),
         };
         Some(Caption { tooltip, action, progress })
@@ -557,6 +607,7 @@ enum Msg {
     Progress(u64, u64),
     Downloaded(Result<Pending, String>),
     RefreshDeferred,
+    HubStopped(Result<(), String>),
 }
 
 enum Request {
@@ -577,6 +628,11 @@ pub(crate) struct Updater {
     rx: mpsc::Receiver<Msg>,
     requests: Option<mpsc::Sender<Request>>,
     pub(crate) refreshing: bool,
+    /// The installer was started after the hub in WSL stopped: the window quits.
+    quit: bool,
+    /// The hub in WSL was stopped (or not) and the installer did not start: the window attaches
+    /// again.
+    reattach: bool,
 }
 
 impl std::fmt::Debug for Updater {
@@ -589,7 +645,7 @@ impl Updater {
     /// An updater that never checks, and why (shown in Components).
     pub(crate) fn off(why: &str) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), last_checked: None, phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx, requests: None, refreshing: false }
+        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), last_checked: None, phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx, requests: None, refreshing: false, quit: false, reattach: false }
     }
 
     /// An updater for this build that will check `cfg` once the window is up ([`Self::start`]).
@@ -640,7 +696,7 @@ impl Updater {
                         Ok(found) => {
                             self.check = ReleaseCheck::Latest { version: found.manifest.version.clone(), build: found.manifest.build };
                             // A click during the check queues the installer the user chose.
-                            if !matches!(self.phase, Phase::Downloading { .. }) {
+                            if !matches!(self.phase, Phase::Downloading { .. } | Phase::StoppingHub { .. }) {
                                 self.phase = match ready {
                                     Some(p) => Phase::Ready(p),
                                     None if offer(self.build, found.manifest.build) == Offer::Newer => Phase::Available(found),
@@ -663,13 +719,29 @@ impl Updater {
                     }
                 }
                 Msg::RefreshDeferred => self.refreshing = false,
+                Msg::HubStopped(result) => {
+                    let Phase::StoppingHub { pending, .. } = &self.phase else { continue };
+                    let pending = pending.clone();
+                    let started = result.and_then(|()| match &self.cfg {
+                        Some(cfg) => run_installer(&cfg.dir, &pending),
+                        None => Err("no update is ready".into()),
+                    });
+                    match started {
+                        Ok(()) => self.quit = true,
+                        Err(e) => {
+                            self.notice = Some(e);
+                            self.reattach = true;
+                        }
+                    }
+                    self.phase = Phase::Ready(pending);
+                }
             }
         }
     }
 
     /// Check now on the existing worker, subject to the server's retry delay.
     pub(crate) fn refresh(&mut self) {
-        if self.refreshing || matches!(self.phase, Phase::Downloading { .. } | Phase::Ready(_))
+        if self.refreshing || matches!(self.phase, Phase::Downloading { .. } | Phase::Ready(_) | Phase::StoppingHub { .. })
             || matches!(self.check, ReleaseCheck::Checking)
         {
             return;
@@ -695,6 +767,40 @@ impl Updater {
     pub(crate) fn install(&mut self) -> Result<(), String> {
         let (Some(cfg), Phase::Ready(p)) = (&self.cfg, &self.phase) else { return Err("no update is ready".into()) };
         run_installer(&cfg.dir, p)
+    }
+
+    /// "Restart to update" while this PC's hub runs in WSL (`label`, P423): `stop` runs on a
+    /// worker, and only when it succeeds is the installer started; then [`Self::take_quit`]
+    /// says so. When it fails the update stays ready, why is the notice, and
+    /// [`Self::take_reattach`] says so.
+    pub(crate) fn install_after(&mut self, ctx: &egui::Context, label: String, stop: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
+        let (Some(_), Phase::Ready(p)) = (&self.cfg, &self.phase) else { return Err("no update is ready".into()) };
+        let pending = p.clone();
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::Builder::new()
+            .name("yaac-update-stop-hub".into())
+            .spawn(move || {
+                let _ = tx.send(Msg::HubStopped(stop()));
+                ctx.request_repaint();
+            })
+            .map_err(|e| format!("could not stop the hub in {label}: {e}"))?;
+        self.phase = Phase::StoppingHub { pending, label };
+        Ok(())
+    }
+
+    /// The installer has started: quit the window (once).
+    pub(crate) fn take_quit(&mut self) -> bool {
+        std::mem::take(&mut self.quit)
+    }
+
+    /// The update did not start after stopping the hub in WSL: attach again (once).
+    pub(crate) fn take_reattach(&mut self) -> bool {
+        std::mem::take(&mut self.reattach)
+    }
+
+    /// Where releases are read from, for a release build on Windows.
+    pub(crate) fn config(&self) -> Option<&Config> {
+        self.cfg.as_ref()
     }
 
     /// The width the title row gives the update item (0 when there is none).
@@ -1011,20 +1117,20 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("updates");
         // None: start.
-        assert_eq!(at_start(&dir, "0.1.0+6"), AtStart::Continue(None));
+        assert_eq!(at_start(&dir, "0.1.0+6", || Ok(())), AtStart::Continue(None));
         // The update went in (this is its build): cleaned up, start.
         pending_in(&dir, 7, true);
-        assert_eq!(at_start(&dir, "0.1.0+7"), AtStart::Continue(None));
+        assert_eq!(at_start(&dir, "0.1.0+7", || Ok(())), AtStart::Continue(None));
         assert_eq!(read_pending(&dir), PendingRead::Missing);
         assert!(!dir.join(SETUP).exists());
         // Unreadable: cleaned up, start.
         std::fs::write(dir.join(PENDING), "{ not json").unwrap();
-        assert_eq!(at_start(&dir, "0.1.0+6"), AtStart::Continue(None));
+        assert_eq!(at_start(&dir, "0.1.0+6", || Ok(())), AtStart::Continue(None));
         assert_eq!(read_pending(&dir), PendingRead::Missing);
         // Changed on disk since it was verified: never run.
         let p = pending_in(&dir, 7, false);
         std::fs::write(&p.path, b"tampered").unwrap();
-        assert_eq!(at_start(&dir, "0.1.0+6"), AtStart::Continue(None));
+        assert_eq!(at_start(&dir, "0.1.0+6", || Ok(())), AtStart::Continue(None));
         assert_eq!(read_pending(&dir), PendingRead::Missing);
         // Pointing outside the updates folder: refused.
         let mut p = pending_in(&dir, 7, false);
@@ -1033,12 +1139,12 @@ mod tests {
         assert!(matches!(read_pending(&dir), PendingRead::Invalid(_)));
         // The installer ran and this build is still older: start, with the message, once.
         pending_in(&dir, 7, true);
-        let AtStart::Continue(Some(msg)) = at_start(&dir, "0.1.0+6") else { panic!("a message") };
+        let AtStart::Continue(Some(msg)) = at_start(&dir, "0.1.0+6", || Ok(())) else { panic!("a message") };
         assert!(msg.contains("0.1.0+7"), "{msg}");
-        assert_eq!(at_start(&dir, "0.1.0+6"), AtStart::Continue(None), "said once");
+        assert_eq!(at_start(&dir, "0.1.0+6", || Ok(())), AtStart::Continue(None), "said once");
         // A development build leaves a pending update alone.
         pending_in(&dir, 7, false);
-        assert_eq!(at_start(&dir, "0.1.0+dev.ab"), AtStart::Continue(None));
+        assert_eq!(at_start(&dir, "0.1.0+dev.ab", || Ok(())), AtStart::Continue(None));
         assert!(matches!(read_pending(&dir), PendingRead::Found(_)));
     }
 
@@ -1056,9 +1162,109 @@ mod tests {
             assert!(err.is_err());
             // A newer verified update that cannot be started: start the window, say why.
             pending_in(&dir, 7, false);
-            assert!(matches!(at_start(&dir, "0.1.0+6"), AtStart::Continue(Some(_))));
+            assert!(matches!(at_start(&dir, "0.1.0+6", || Ok(())), AtStart::Continue(Some(_))));
             assert_eq!(read_pending(&dir), PendingRead::Missing);
         }
+    }
+
+    #[test]
+    fn at_start_the_hub_in_wsl_is_stopped_before_the_installer_runs() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("updates");
+        // It could not be stopped: the installer is not run, the update stays as it was.
+        let p = pending_in(&dir, 7, false);
+        let AtStart::Continue(Some(msg)) = at_start(&dir, "0.1.0+6", || Err("the hub in WSL (Ubuntu) could not be stopped: x".into())) else { panic!("a message") };
+        assert!(msg.contains("0.1.0+7 was not installed") && msg.contains("could not be stopped"), "{msg}");
+        assert_eq!(read_pending(&dir), PendingRead::Found(p), "not attempted, still verified");
+        // Nothing to install: nothing is stopped.
+        let mut stopped = false;
+        assert_eq!(at_start(&dir, "0.1.0+7", || { stopped = true; Ok(()) }), AtStart::Continue(None));
+        assert!(!stopped);
+        // Stopped: then the installer runs (here it is no executable, so it fails to start).
+        pending_in(&dir, 7, false);
+        let mut stopped = false;
+        let r = at_start(&dir, "0.1.0+6", || { stopped = true; Ok(()) });
+        assert!(stopped);
+        if cfg!(unix) {
+            assert!(matches!(r, AtStart::Continue(Some(ref m)) if m.contains("could not be installed")), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn restart_to_update_waits_for_the_hub_in_wsl_to_stop() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("updates");
+        let ctx = egui::Context::default();
+        let wait = |u: &mut Updater| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while matches!(u.phase, Phase::StoppingHub { .. }) {
+                assert!(Instant::now() < deadline, "timed out: {u:?}");
+                std::thread::sleep(Duration::from_millis(5));
+                u.poll();
+            }
+        };
+        let cfg = Config { latest_url: "http://127.0.0.1:9/x".into(), dir: dir.clone(), https_only: false, timeout: Duration::from_secs(1) };
+        let mut u = Updater::new(cfg, "0.1.0+6", None);
+        assert!(u.install_after(&ctx, "Ubuntu (WSL)".into(), || Ok(())).is_err(), "nothing is ready");
+        let p = pending_in(&dir, 7, false);
+        u.phase = Phase::Ready(p.clone());
+        // It could not be stopped: still ready, why is said, attach again; no installer.
+        u.install_after(&ctx, "Ubuntu (WSL)".into(), || Err("the hub in WSL (Ubuntu) could not be stopped".into())).unwrap();
+        let caption = u.phase.caption().unwrap();
+        assert!(caption.tooltip.contains("Stopping the hub in Ubuntu (WSL)") && caption.action.is_none(), "{}", caption.tooltip);
+        u.refresh();
+        assert!(!u.refreshing, "no check while stopping");
+        wait(&mut u);
+        assert_eq!(u.phase, Phase::Ready(p.clone()));
+        assert!(u.notice.take().unwrap().contains("could not be stopped"));
+        assert!(u.take_reattach() && !u.take_reattach(), "once");
+        assert!(!u.take_quit());
+        assert_eq!(read_pending(&dir), PendingRead::Found(p.clone()), "not attempted");
+        // Stopped: the installer is started (marked attempted first). Here it is no executable.
+        u.install_after(&ctx, "Ubuntu (WSL)".into(), || Ok(())).unwrap();
+        wait(&mut u);
+        let PendingRead::Found(after) = read_pending(&dir) else { panic!("still there") };
+        assert!(after.attempted);
+        if cfg!(unix) {
+            assert!(u.notice.is_some() && u.take_reattach() && !u.take_quit());
+        }
+    }
+
+    #[test]
+    fn the_hub_for_wsl_is_the_windows_builds_own_and_verified() {
+        const HUB: &[u8] = b"pretend this is the Linux hub";
+        let manifest_with = |b: &str, sha256: &str| {
+            let mut m: serde_json::Value = serde_json::from_str(&manifest(b, 7, BYTES.len(), &sha(BYTES))).unwrap();
+            m["artifacts"].as_array_mut().unwrap().push(serde_json::json!({
+                "name": "yaac-hub-linux-x86_64", "component": "hub-linux-x86_64", "version": "0.1.0+7", "size": HUB.len(), "sha256": sha256, "url": format!("{b}/hub")
+            }));
+            m.to_string().into_bytes()
+        };
+        let routes = |claimed: Option<String>| move |b: &str| vec![
+            ("/repos/lelemm/yaac/releases/tags/v0.1.0-build.7".to_owned(), 200, release(b).into_bytes()),
+            ("/download/manifest.json".to_owned(), 200, manifest_with(b, &claimed.unwrap_or_else(|| sha(HUB)))),
+            ("/hub".to_owned(), 200, HUB.to_vec()),
+        ];
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("wsl-hub-update");
+        let server = serve(routes(None));
+        let cfg = config(&server, &t.path().join("updates"));
+        let mut last = (0, 0);
+        let (file, asset) = download_hub(&cfg, "0.1.0+7", "x86_64", &dir, &mut |d, n| last = (d, n)).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), HUB);
+        assert_eq!((asset.sha256.as_str(), asset.size), (sha(HUB).as_str(), HUB.len() as u64));
+        assert_eq!(last, (HUB.len() as u64, HUB.len() as u64));
+        assert_eq!(asset, hub_asset(&cfg, "0.1.0+7", "x86_64").unwrap(), "the transfer's lookup");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Not published for that arch, or not that build: said, nothing kept.
+        assert!(download_hub(&cfg, "0.1.0+7", "aarch64", &dir, &mut |_, _| {}).unwrap_err().contains("no hub for aarch64"));
+        assert!(download_hub(&cfg, "0.1.0+8", "x86_64", &dir, &mut |_, _| {}).is_err());
+        assert!(!dir.exists());
+        // A mismatch is refused and deleted.
+        let server = serve(routes(Some(sha(b"other"))));
+        let cfg = config(&server, &t.path().join("updates"));
+        assert!(download_hub(&cfg, "0.1.0+7", "x86_64", &dir, &mut |_, _| {}).unwrap_err().contains("SHA-256"));
+        assert!(!dir.exists());
     }
 
     #[test]

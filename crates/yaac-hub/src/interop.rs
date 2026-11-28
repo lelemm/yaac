@@ -57,38 +57,70 @@ impl Connector for InteropConnector {
     }
 }
 
+/// How long `yaac local-daemon` waits, once its input has closed (the hub in WSL stopped or let
+/// go of the target), for the bridge to close its output too. Then it ends, and the bridge with
+/// it: nothing of the install's `yaac.exe` stays running after the hub is gone (P423), so the
+/// installer can replace it. `yaacd` itself keeps running, and so do its turns (invariant 8).
+pub const LOCAL_DAEMON_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `yaac local-daemon`: starts this computer's local `yaacd connect` bridge as `local`
 /// describes it and copies bytes between it and this process's standard streams until either
-/// side closes. Returns when the bridge is gone.
+/// side closes. Returns when the bridge is gone, or [`LOCAL_DAEMON_GRACE`] after the input
+/// closed.
 pub fn serve_local_daemon(local: LocalConfig) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().map_err(|e| e.to_string())?;
-    rt.block_on(async move {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build().map_err(|e| e.to_string())?;
+    let result = rt.block_on(async move {
         let mut local = local;
         // Our standard error goes back to the hub in WSL, which shows it in the target's log.
         local.inherit_stderr = true;
         let connector = LocalConnector::new(local);
         let stream = connector.connect(&ConnectCtx::default()).await.map_err(|e| e.to_string())?;
-        let Stream { mut reader, mut writer, child } = stream;
-        let up = async move {
-            let mut stdin = tokio::io::stdin();
-            let _ = tokio::io::copy(&mut stdin, &mut writer).await;
-            let _ = writer.shutdown().await;
-        };
-        let down = async move {
-            let mut stdout = tokio::io::stdout();
-            let _ = tokio::io::copy(&mut reader, &mut stdout).await;
-            let _ = stdout.flush().await;
-        };
-        // The bridge closing its output ends it; the hub closing our input only closes the
-        // bridge's, which then exits by itself.
-        tokio::pin!(down);
-        tokio::select! {
-            () = &mut down => {}
-            () = async { up.await; std::future::pending::<()>().await } => {}
-        }
+        let Stream { reader, writer, child } = stream;
+        pump(tokio::io::stdin(), tokio::io::stdout(), reader, writer, LOCAL_DAEMON_GRACE).await;
         drop(child);
         Ok(())
-    })
+    });
+    // A read of standard input may still be waiting (the bridge ended first): never wait for it.
+    rt.shutdown_background();
+    result
+}
+
+/// Copies `input` to the bridge's `writer` and the bridge's `reader` to `output`. The bridge
+/// closing its output ends it; once `input` closes, the bridge's input is closed and it has
+/// `grace` to close its output.
+async fn pump(
+    mut input: impl tokio::io::AsyncRead + Unpin,
+    mut output: impl tokio::io::AsyncWrite + Unpin,
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    mut writer: impl tokio::io::AsyncWrite + Unpin,
+    grace: std::time::Duration,
+) {
+    let up = async move {
+        let _ = tokio::io::copy(&mut input, &mut writer).await;
+        let _ = writer.shutdown().await;
+    };
+    let down = async move {
+        let _ = tokio::io::copy(&mut reader, &mut output).await;
+        let _ = output.flush().await;
+    };
+    tokio::pin!(down);
+    let input_closed = tokio::select! {
+        () = &mut down => false,
+        () = up => true,
+    };
+    if input_closed {
+        let _ = tokio::time::timeout(grace, &mut down).await;
+    }
+}
+
+/// The named event (`Local\yaac-local-daemon-<hash>`) that every `yaac.exe local-daemon` of the
+/// install at `exe` holds while it runs (P423). The window waits for it to be gone before the
+/// installer replaces `exe`. The hash is of the path, case-insensitive (FNV-1a).
+pub fn local_daemon_event(exe: &std::path::Path) -> String {
+    let path = exe.to_string_lossy();
+    let path = path.strip_prefix(r"\\?\").unwrap_or(&path).replace('/', r"\").to_lowercase();
+    let hash = path.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    format!(r"Local\yaac-local-daemon-{hash:016x}")
 }
 
 /// `yaac hub-bridge`: connects to the hub's local socket (waiting up to `wait` for it to
@@ -180,5 +212,53 @@ mod tests {
         let (i, o) = tokio::io::split(a);
         let e = bridge(&dir.path().join("none.sock"), std::time::Duration::from_millis(300), i, o).await.unwrap_err();
         assert!(e.starts_with("no hub at"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod local_daemon_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_daemon_ends_soon_after_its_input_closes() {
+        // The bridge never closes its output: only the grace ends the pump.
+        let (input, mut hub) = tokio::io::duplex(64);
+        let (output, _out) = tokio::io::duplex(64);
+        let (reader, _bridge_out) = tokio::io::duplex(64);
+        let (writer, mut bridge_in) = tokio::io::duplex(64);
+        let pumping = tokio::spawn(pump(input, output, reader, writer, std::time::Duration::from_millis(50)));
+        hub.write_all(b"hi").await.unwrap();
+        let mut got = [0u8; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut bridge_in, &mut got).await.unwrap();
+        assert_eq!(&got, b"hi");
+        drop(hub);
+        tokio::time::timeout(std::time::Duration::from_secs(5), pumping).await.expect("ends after the grace").unwrap();
+        // The bridge's input was closed first.
+        let mut rest = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut bridge_in, &mut rest).await.unwrap();
+        assert!(rest.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_daemon_ends_when_the_bridge_closes() {
+        let (input, _hub) = tokio::io::duplex(64);
+        let (output, mut out) = tokio::io::duplex(64);
+        let (reader, mut bridge_out) = tokio::io::duplex(64);
+        let (writer, _bridge_in) = tokio::io::duplex(64);
+        let pumping = tokio::spawn(pump(input, output, reader, writer, std::time::Duration::from_secs(60)));
+        bridge_out.write_all(b"ok").await.unwrap();
+        drop(bridge_out);
+        tokio::time::timeout(std::time::Duration::from_secs(5), pumping).await.expect("ends with the bridge").unwrap();
+        let mut got = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut out, &mut got).await.unwrap();
+        assert_eq!(got, b"ok");
+    }
+
+    #[test]
+    fn one_local_daemon_event_per_install() {
+        let a = local_daemon_event(std::path::Path::new(r"C:\Users\me\AppData\Local\Programs\YAAC\yaac.exe"));
+        assert!(a.starts_with(r"Local\yaac-local-daemon-") && a.len() == r"Local\yaac-local-daemon-".len() + 16, "{a}");
+        assert_eq!(a, local_daemon_event(std::path::Path::new(r"\\?\c:\users\ME\AppData\Local\Programs\YAAC\yaac.exe")), "the same file");
+        assert_ne!(a, local_daemon_event(std::path::Path::new(r"C:\Other\YAAC\yaac.exe")));
     }
 }

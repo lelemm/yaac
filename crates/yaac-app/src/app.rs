@@ -773,6 +773,8 @@ pub(crate) enum Clock {
 pub(crate) mod hubs;
 #[cfg(feature = "hub")]
 pub(crate) mod hub_views;
+#[cfg(feature = "hub")]
+mod wsl_hub;
 
 /// The attachment to a real hub.
 #[cfg(feature = "hub")]
@@ -815,6 +817,18 @@ pub(crate) struct DeskHubs {
     /// **Start the hub here again** for a hub in this PC's WSL: its system service is being
     /// removed there (off the UI thread); the reclaim carries on when this answers.
     pub reclaiming: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// The hub in this PC's WSL is being brought to this window's build, or that failed (P423).
+    pub(crate) wsl_update: Option<crate::wsl_update::Progress>,
+    /// What runs `wsl.exe` and downloads the hub for that; `None`: the system's (tests inject).
+    pub(crate) wsl_ops: Option<Arc<dyn crate::wsl_update::WslOps>>,
+    /// This window's build, as the hub in WSL is compared with it.
+    pub(crate) wsl_build: &'static str,
+    /// A stop for an update was looked for at this window's start.
+    wsl_checked: bool,
+    /// The hub in WSL was brought to this build once by itself; again only on **Retry**.
+    wsl_tried: bool,
+    /// Why the hub in WSL is not brought to this build (a development build).
+    wsl_note: Option<String>,
 }
 
 #[cfg(feature = "hub")]
@@ -832,7 +846,7 @@ impl DeskHubs {
             }
             saved.moved(&t.hub_id, &t.address, &t.host_name, t.via.as_ref());
         }
-        Self { saved, local, moved_here, add_error: None, reclaiming: None }
+        Self { saved, local, moved_here, add_error: None, reclaiming: None, wsl_update: None, wsl_ops: None, wsl_build: crate::BUILD, wsl_checked: false, wsl_tried: false, wsl_note: None }
     }
 
     /// Saved hubs on a local hub that is never attached (renderer tests).
@@ -840,7 +854,7 @@ impl DeskHubs {
     pub(crate) fn for_test(saved: hubs::SavedHubs) -> Self {
         let paths = yaac_hub::HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
         let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None, bridge: None };
-        Self { saved, local, moved_here: None, add_error: None, reclaiming: None }
+        Self { saved, local, moved_here: None, add_error: None, reclaiming: None, wsl_update: None, wsl_ops: None, wsl_build: crate::BUILD, wsl_checked: false, wsl_tried: false, wsl_note: None }
     }
 
     /// The attach configuration of the selected hub.
@@ -1117,17 +1131,25 @@ impl YaacApp {
                 if let Some(config) = launch.attach {
                     // A desktop window keeps saved hubs (P412); a client of a hub on another
                     // machine started for one address (the phone's controllers) does not.
-                    let config = if config.is_remote() {
-                        config
+                    let (config, held) = if config.is_remote() {
+                        (config, false)
                     } else {
                         let d = DeskHubs::new(config);
                         let config = d.config();
+                        // This PC's hub in WSL was stopped for an update: it is brought to this
+                        // build before the window attaches (P423, `wsl_hub_upkeep`).
+                        let held = d.stopped_for_update().is_some();
                         desk_hubs = Some(d);
-                        config
+                        (config, held)
                     };
-                    let (conn, c, backend) = connect_hub(config, &cc.egui_ctx);
-                    hub = Some(conn);
-                    (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
+                    if held {
+                        let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
+                        (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()) as Box<dyn SshSetupBackend>)
+                    } else {
+                        let (conn, c, backend) = connect_hub(config, &cc.egui_ctx);
+                        hub = Some(conn);
+                        (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
+                    }
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
                     (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()))
@@ -1432,6 +1454,11 @@ impl YaacApp {
     }
 
     pub(crate) fn install_update(&mut self) -> Result<(), String> {
+        // This PC's hub in WSL holds yaac.exe (`local-daemon`): it is stopped first (P423).
+        #[cfg(feature = "hub")]
+        if self.desk_hubs.as_ref().is_some_and(|d| d.wsl_hub().is_some()) {
+            return self.install_update_after_wsl_hub();
+        }
         self.updater.install()?;
         self.shell.quit(&self.ctx);
         Ok(())
@@ -1831,7 +1858,8 @@ impl YaacApp {
                 }
                 Action::RetryHub => {
                     #[cfg(feature = "hub")]
-                    if self.desk_hubs.is_some() {
+                    if self.retry_wsl_update() {
+                    } else if self.desk_hubs.is_some() {
                         self.attach_selected_hub();
                     } else if let Some(h) = &mut self.hub {
                         h.next_reattach = Some(std::time::Instant::now());
@@ -2048,6 +2076,7 @@ impl YaacApp {
     #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
         self.reclaim_upkeep();
+        self.wsl_hub_upkeep();
         let reclaim = self.reclaim_line();
         let Some(h) = &mut self.hub else { return };
         if let Some(history) = self.client.take_composer_history() {
@@ -2158,8 +2187,13 @@ impl YaacApp {
             }
             HelloOutcome::HubOutdated { hub_build } => {
                 // A hub on another machine is never replaced from here: say what to update.
-                self.client.state.hub.last_error = Some(h.config.mismatch_text()
+                // An older one in this PC's WSL is brought to this build (P423), once.
+                let note = self.desk_hubs.as_ref().and_then(|d| d.wsl_note.clone());
+                self.client.state.hub.last_error = Some(note.or_else(|| h.config.mismatch_text())
                     .unwrap_or_else(|| format!("The running hub ({hub_build}) could not be replaced by this build.")));
+                if h.config.bridge.is_some() && !hub_build.is_empty() {
+                    self.wsl_hub_outdated(&hub_build);
+                }
             }
             HelloOutcome::WindowOutdated { message } => {
                 let message = h.config.mismatch_text().unwrap_or(message);
