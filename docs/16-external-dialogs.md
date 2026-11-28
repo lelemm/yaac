@@ -127,12 +127,22 @@ within the protocol's message limit.
   (invariant 8). The request carries `source: { channelId, name }` so every UI says where it comes
   from; it is never shown as coming from an agent or from the user (invariant 13).
 - **The hub** keeps the channel registry (`channelId` → `targetId`, name, connected) from `yaacd`'s
-  `channel/registered|closed` notifications, and routes the answer back over that target's one
-  connection (invariant 1) — the answer path of every other request, so it reaches the `yaacd` that
-  raised it. No new connection, no side channel.
-- **The UIs** render the dialog with the existing request cards / form renderer (egui, WPF,
-  Android), plus a notification on the phone like any request. Secret fields are never cached on the
-  host (as secret questions today).
+  `channel/registered|closed` notifications, and each target's inbox from `inbox/list` (read when
+  a connection with `channels` is ready) and `inbox/updated`, **in memory only** — never in the
+  cache file. It routes the answer back over that target's one connection (invariant 1) — the
+  answer path of every other request, so it reaches the `yaacd` that raised it. No new
+  connection, no side channel. Secret input values are dropped from any recorded dialog answer
+  before it reaches the cache.
+- **Needs attention, as any request.** A thread dialog moves its thread to `needsAttention`, so
+  the thread's mark, the attention map, the Needs-you count, the tray and the reminder all count
+  it, with the thread's mute rules. An inbox dialog is reminded of under "<integrator> on
+  <target>" in the same reminder and feed (its `RequestLocation` carries the reserved thread id
+  `~inbox`, which only the hub and its windows use) and is listed in Needs you under its target.
+  Both clear when answered, dismissed or withdrawn.
+- **The UIs** build the dialog at runtime from its layout tree (docs/07-ui.md#external-dialogs),
+  with one shared controller for validation and the answer, plus a notification on the phone like
+  any request; tapping it opens the dialog. Secret values are never cached on the host (as secret
+  questions today).
 - **One decision per request.** Answers carry an operation ID. The first accepted answer
   records the final decision. A later answer gets `request_not_pending`. A dropped hub
   connection can leave the UI unsure whether its operation took effect, so it never retries
@@ -181,4 +191,10 @@ target-level inbox and channel registry on attach. `inbox/updated { request }` u
 `RequestItem` or removes a terminal one. The hub sends `inbox/respond { opId, requestId, response }`
 for answers and dismissals, using the same request and answer shapes without a thread ID.
 
-Hub ⇄ UI (attach): the target inbox requests in the index/needs-you payload.
+Hub ⇄ UI (attach): `hub/inbox/list` → `{ targets: [TargetInbox { target, requests, channels:
+[HubChannel { channelId, name, description?, connected }] }] }`, and the notification
+`hub/inbox/changed` with one target's whole `TargetInbox` whenever it changes. A window answers an
+inbox dialog with a routed `inbox/respond` (`hub/request`) and a thread dialog with
+`request/respond`, as any request. The reminder feed (`hub/notifications/requests`) lists inbox
+dialogs with `kind: "Dialog"` and `location.threadId: "~inbox"`
+(`attach::INBOX_THREAD`).
