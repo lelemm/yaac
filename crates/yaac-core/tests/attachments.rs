@@ -26,6 +26,8 @@ use yaac_protocol::{ClientId, Support};
 struct Wire {
     sent: Rc<RefCell<Vec<Message>>>,
     inject: Rc<RefCell<VecDeque<Message>>>,
+    /// Routed methods (`hub/request`) the test answers itself.
+    hold: Rc<RefCell<Vec<&'static str>>>,
 }
 
 struct Rig {
@@ -38,6 +40,12 @@ impl HubLink for Rig {
         self.wire.sent.borrow_mut().push(message.clone());
         if let Message::Request { method, .. } = &message
             && (method.starts_with("hub/upload/") || method.starts_with("hub/drafts/blob/"))
+        {
+            return;
+        }
+        if let Message::Request { method, params, .. } = &message
+            && method == "hub/request"
+            && self.wire.hold.borrow().iter().any(|m| params["method"] == *m)
         {
             return;
         }
@@ -414,4 +422,81 @@ fn a_device_kept_draft_never_crosses_the_link_and_comes_back_from_the_device() {
     let (phone, wire) = boot_device(vec![value]);
     assert_eq!(phone.state.drafts.get(&fix).map(|x| x.text.as_str()), Some("hello from the phone"));
     assert!(wire.requests(names::DRAFTS_LIST).is_empty());
+}
+
+/// A device-kept draft (P393) and the fate of its message: accepted, the stored draft is
+/// forgotten and the host is told there is something to write even though nothing is dirty (a
+/// sent message must never come back from the device's file); refused, the stored text stays
+/// and Edit puts it back; outcome unknown, the bubble keeps the text and offers Edit.
+#[test]
+fn a_device_kept_draft_is_forgotten_when_its_message_is_accepted_and_kept_otherwise() {
+    use std::collections::BTreeMap;
+    use yaac_protocol::rpc::{ErrorCode, ErrorObject};
+    use yaac_core::sending::SendState;
+
+    let hub = DemoHub::new(Scenario::Fleet, NOW);
+    let fix = threads::fix();
+    let d = DraftRef::Thread(fix.clone());
+    let key = d.store_key();
+    let wire = Wire::default();
+    let mut c = Client::new(Box::new(Rig { hub: hub.clone(), wire: wire.clone() }), "test", ClientId::new(DEMO_CLIENT));
+    c.keep_drafts_on_device(Vec::new());
+    settle(&mut c, &hub);
+    c.open(&fix);
+    settle(&mut c, &hub);
+    // The device's file, as the host keeps it.
+    let mut file = BTreeMap::new();
+    let mut write = |c: &mut Client| {
+        for (k, v) in c.take_device_drafts() {
+            match v { Some(v) => { file.insert(k, v["text"].as_str().unwrap().to_owned()); } None => { file.remove(&k); } }
+        }
+        file.clone()
+    };
+    let type_and_store = |c: &mut Client, text: &str| {
+        c.state.drafts.entry(fix.clone()).or_default().text = text.into();
+        c.draft_changed(&d);
+        c.flush_drafts();
+    };
+    let send_held = |c: &mut Client| -> RpcId {
+        wire.hold.borrow_mut().push("turn/start");
+        assert!(c.send(&fix));
+        let (id, _) = wire.requests("hub/request").into_iter().rfind(|(_, p)| p["method"] == "turn/start").unwrap();
+        id
+    };
+
+    // Accepted.
+    type_and_store(&mut c, "the long message");
+    assert_eq!(write(&mut c).get(&key).map(String::as_str), Some("the long message"));
+    wire.hold.borrow_mut().clear();
+    assert!(c.send(&fix));
+    settle(&mut c, &hub);
+    assert!(c.state.transcripts[&fix].pending().iter().all(|p| p.state == SendState::Sent));
+    assert!(!c.drafts_dirty(), "nothing is left to flush");
+    assert!(c.device_drafts_pending(), "the host is told the stored draft went");
+    assert!(!write(&mut c).contains_key(&key));
+    assert!(!c.device_drafts_pending());
+
+    // Refused: nothing was sent, the stored text stays, and Edit gives it back.
+    type_and_store(&mut c, "refused one");
+    write(&mut c);
+    let id = send_held(&mut c);
+    wire.inject.borrow_mut().push_back(Message::Error { id: Some(id), error: ErrorObject::new(ErrorCode::TurnInProgress, "busy") });
+    c.pump();
+    let failed = c.state.transcripts[&fix].pending().iter().find(|p| matches!(p.state, SendState::Failed(_))).cloned().expect("the bubble says it failed");
+    assert_eq!(failed.draft.text, "refused one");
+    assert_eq!(write(&mut c).get(&key).map(String::as_str), Some("refused one"));
+    assert!(c.edit_send(&fix, &failed.item));
+    assert_eq!(c.state.drafts[&fix].text, "refused one");
+    c.flush_drafts();
+    assert_eq!(write(&mut c).get(&key).map(String::as_str), Some("refused one"));
+
+    // Outcome unknown: the bubble keeps the text and offers Edit; it is never sent again.
+    send_held(&mut c);
+    c.connection_lost();
+    let unknown = c.state.transcripts[&fix].pending().iter().find(|p| p.state == SendState::Unknown).cloned().expect("the bubble says it may not have arrived");
+    assert_eq!(unknown.draft.text, "refused one");
+    write(&mut c);
+    assert!(c.edit_send(&fix, &unknown.item));
+    c.flush_drafts();
+    assert_eq!(write(&mut c).get(&key).map(String::as_str), Some("refused one"));
 }

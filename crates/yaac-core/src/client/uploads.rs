@@ -60,6 +60,14 @@ impl Client {
         self.device_drafts.is_some()
     }
 
+    /// Whether device-kept drafts changed that [`Self::take_device_drafts`] has not handed out.
+    /// Not only an edit changes them: a message accepted (or that may have arrived) forgets
+    /// its stored draft with nothing left to flush, so the host checks this every frame and
+    /// writes at once — a sent message must never come back from the device's file.
+    pub fn device_drafts_pending(&self) -> bool {
+        self.device_drafts.as_ref().is_some_and(|d| !d.writes.is_empty())
+    }
+
     /// The device-kept drafts that changed since the last call: `(key, Some(stored))` to keep,
     /// `(key, None)` to forget. Empty for a client whose drafts are in the hub.
     pub fn take_device_drafts(&mut self) -> Vec<(String, Option<Value>)> {

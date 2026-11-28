@@ -278,7 +278,11 @@ or clearing its own draft for the same thread never deletes them; sending or rem
 chip deletes the blob as before. The hub sweeps device blobs older than 14 days, keeping
 any that are feeding a target upload until the upload ends (P395). An expired attachment
 that still needs its blob must be attached again. The file is written off the controller's thread, newest
-snapshot first, and once more in place when the controller stops.
+snapshot first, and once more in place when the controller stops. A message that was accepted
+(or may have arrived) leaves the file in the same frame its answer is applied, not at the next
+edit or at the stop: the phone's process can be killed without a stop, and a sent message must
+never come back in the composer when the app starts again. A refused message's draft stays in
+the file until **Edit** puts it back in the composer.
 
 ### Generated documents and images (P358, Proposed)
 
